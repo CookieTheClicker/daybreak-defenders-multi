@@ -1,0 +1,10 @@
+﻿Expected props (drop replacements in ../props):
+- player.png
+- enemy.png
+- house.png
+- tree.png
+- rock.png
+- metal.png
+- barricade.png
+- spike.png
+- turret.png

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daybreak Defenders</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="wrapper">
+        <canvas id="gameCanvas" width="1280" height="896" tabindex="0"></canvas>
+
+        <div id="start-overlay" aria-hidden="false">
+            <div class="start-panel">
+                <h1>Daybreak Defenders</h1>
+                <p>Select a difficulty to begin.</p>
+                <div class="difficulty-grid">
+                    <button class="difficulty-button" data-difficulty="easy" aria-pressed="false">Easy</button>
+                    <button class="difficulty-button active" data-difficulty="normal" aria-pressed="true">Normal</button>
+                    <button class="difficulty-button" data-difficulty="hard" aria-pressed="false">Hard</button>
+                    <button class="difficulty-button" data-difficulty="insane" aria-pressed="false">Insane</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="ui-layer">
+            <button id="pause-toggle-button" class="pause-toggle-button" type="button" aria-pressed="false" aria-label="Pause game">Pause</button>
+            <div id="hud">
+                <div id="resource-display">
+                    <span id="hud-wood">Wood: 0</span>
+                    <span id="hud-stone">Stone: 0</span>
+                    <span id="hud-metal">Metal: 0</span>
+                    <span id="hud-berries">Berries: 0</span>
+                </div>
+                <div id="hud-status">
+                    <div class="vital" id="player-vital">
+                        <span class="vital-label">Player</span>
+                        <div class="vital-bar">
+                            <div class="vital-fill" id="player-health-fill"></div>
+                        </div>
+                        <span class="vital-value" id="player-health-value">120 / 120</span>
+                    </div>
+                    <div class="vital" id="house-vital">
+                        <span class="vital-label">House</span>
+                        <div class="vital-bar">
+                            <div class="vital-fill" id="house-health-fill"></div>
+                        </div>
+                        <span class="vital-value" id="house-health-value">120 / 120</span>
+                    </div>
+                    <div class="daytime">
+                        <span id="hud-day">Day 1</span>
+                        <span id="hud-time">Daytime</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="build-status-panel">
+                <span id="build-status" class="build-status">No build selected. Select a structure kit from the hotbar.</span>
+            </div>
+
+            <div id="hud-message"></div>
+        </div>
+
+        <div id="inventory-panel" aria-hidden="true">
+            <div class="inventory-window">
+                <div class="inventory-equipment">
+                    <span class="inventory-equipment-label">Equipped Armor</span>
+                    <div class="inventory-equipment-slot" id="inventory-armor-slot"></div>
+                </div>
+                <div class="inventory-grid" id="inventory-grid"></div>
+            </div>
+        </div>
+        <div id="inventory-bar" aria-hidden="false">
+            <div id="inventory-bar-items"></div>
+        </div>
+        <div id="crafting-panel">
+            <h2>Crafting Table</h2>
+            <div class="crafting-resource-summary" id="crafting-resources"></div>
+            <div class="crafting-options" id="crafting-options"></div>
+            <div class="crafting-hint">Press E again to close</div>
+        </div>
+
+        <div id="pause-overlay" aria-hidden="true" inert>
+            <div class="pause-menu">
+                <h2>Game Paused</h2>
+                <button id="pause-resume" class="pause-button">Resume</button>
+                <button id="pause-settings" class="pause-button">Settings</button>
+                <button id="pause-restart" class="pause-button destructive">Restart Run</button>
+                <p class="pause-hint">Press P or Esc to resume</p>
+            </div>
+        </div>
+
+        <div id="settings-modal" aria-hidden="true" inert>
+            <div class="settings-container">
+                <div class="settings-header">
+                    <h2>Settings</h2>
+                    <button id="settings-close" class="icon-button" aria-label="Close settings">&times;</button>
+                </div>
+                <div class="settings-tabs" role="tablist">
+                    <button class="settings-tab active" data-tab="info" role="tab" aria-selected="true">Info</button>
+                    <button class="settings-tab" data-tab="controls" role="tab" aria-selected="false">Controls</button>
+                </div>
+                <div class="settings-panels">
+                    <div class="settings-panel active" data-panel="info" role="tabpanel">
+                        <h3>Tips &amp; Info</h3>
+                        <ul class="info-list">
+                            <li><strong>Structures:</strong> Use 1-8 or the mouse wheel to choose an inventory slot. Selecting a structure kit readies it for placement.</li>
+                            <li>Left click to place, press R to rotate turrets, Esc cancels placement when one is selected.</li>
+                            <li>Press Esc or P to open the pause menu.</li>
+                            <li>Craft kits at the house crafting table before placing structures.</li>
+                            <li>Toggle inventory with I, upgrade nearby structures with F, gather resources with E.</li>
+                            <li>Hold Shift to sprint while moving.</li>
+                            <li>Drop replacement art in <code>assets/props</code> and update the loader in <code>src/assets.js</code>.</li>
+                        </ul>
+                    </div>
+                    <div class="settings-panel" data-panel="controls" role="tabpanel" aria-hidden="true">
+                        <h3>Controls</h3>
+                        <ul class="info-list">
+                            <li>Move with WASD or the arrow keys.</li>
+                            <li>Interact or gather with E.</li>
+                            <li>Attack with Space.</li>
+                            <li>Upgrade nearby structures with F.</li>
+                            <li>Toggle the inventory with I.</li>
+                            <li>Select inventory slots with 1-8 or the mouse wheel.</li>
+                            <li>Rotate turret placement with R.</li>
+                            <li>Pause or resume with Esc or P.</li>
+                            <li>Open loot chests with E to discover gear.</li>
+                        </ul>
+                        <div class="settings-option">
+                            <div class="settings-option-text">
+                                <p class="settings-option-title">Enable mobile controls</p>
+                                <p class="settings-option-description">Adds an on-screen joystick and action buttons for touch play.</p>
+                            </div>
+                            <label class="toggle-switch" for="mobile-controls-toggle">
+                                <input type="checkbox" id="mobile-controls-toggle">
+                                <span class="toggle-slider" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="game-over-overlay" aria-hidden="true">
+            <div class="game-over-panel">
+                <h2>Game Over</h2>
+                <p>The settlement has fallen. Press restart to try again.</p>
+                <button id="game-restart" class="restart-button">Restart Run</button>
+            </div>
+        </div>
+        <div id="mobile-controls" aria-hidden="true">
+            <div class="joystick-wrapper">
+                <div class="joystick-base">
+                    <div class="joystick-thumb"></div>
+                </div>
+            </div>
+            <div class="mobile-actions">
+                <button class="mobile-button primary" data-action="attack" type="button">Attack</button>
+                <button class="mobile-button" data-action="interact" type="button">Interact</button>
+                <button class="mobile-button" data-action="sprint" type="button">Sprint</button>
+                <button class="mobile-button" data-action="inventory" type="button">Inventory</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="src/main.js"></script>
+
+    <!-- Multiplayer dependencies -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module">
+      import Multiplayer from "./src/multiplayer.js";
+      window.__MP__ = new Multiplayer();
+      window.__MP__.connect();
+      console.log("[Multiplayer] client initialized");
+    </script>
+    
+</body>
+</html>
+
