@@ -2,6 +2,7 @@ import { WORLD_SETTINGS, RESOURCE_TYPES } from "./constants.js";
 import { randomInCircle, distance, clamp } from "./utils.js";
 import { getAsset } from "./assets.js";
 import { createBerryItem, BERRY_STACK_KEY } from "./inventory.js";
+import { random } from "./rng.js";
 
 const GATHER_AMOUNT = {
     wood: 4,
@@ -89,8 +90,8 @@ export class ResourceManager {
                     };
                 } else {
                     position = {
-                        x: margin + Math.random() * (width - margin * 2),
-                        y: margin + Math.random() * (height - margin * 2)
+                        x: margin + random() * (width - margin * 2),
+                        y: margin + random() * (height - margin * 2)
                     };
                 }
 
@@ -99,7 +100,7 @@ export class ResourceManager {
                 const capacity = NODE_CAPACITY[type] || 30;
                 const reward = HARVEST_REWARD[type] ?? capacity;
                 this.nodes.push({
-                    id: `${type}-${i}-${Date.now()}-${Math.random()}`,
+                    id: `${type}-${i}`,
                     type,
                     capacity,
                     amount: capacity,
@@ -147,6 +148,7 @@ export class ResourceManager {
             if (isBerryNode && !this.inventory.canAddItem(createBerryItem(1))) {
                 const progress = 1 - node.amount / node.capacity;
                 return {
+                    nodeId: node.id,
                     type,
                     rewardAmount: 0,
                     rewarded: false,
@@ -165,7 +167,7 @@ export class ResourceManager {
             if (node.amount <= 0) {
                 node.depleted = true;
                 if (isBerryNode) {
-                    const baseRoll = Math.random() < 0.5 ? 1 : 2;
+                    const baseRoll = random() < 0.5 ? 1 : 2;
                     const scaled = Math.round(baseRoll * (this.resourceYieldMultiplier ?? 1) * gatherMultiplier);
                     const rewardAmount = Math.min(2, Math.max(1, scaled));
                     const berryItem = createBerryItem(rewardAmount);
@@ -176,6 +178,7 @@ export class ResourceManager {
                         node.amount = Math.max(restoreAmount, 1);
                         const retryProgress = 1 - node.amount / node.capacity;
                         return {
+                            nodeId: node.id,
                             type,
                             rewardAmount: 0,
                             rewarded: false,
@@ -189,6 +192,7 @@ export class ResourceManager {
                     }
                     const total = this.inventory.countStack(BERRY_STACK_KEY);
                     return {
+                        nodeId: node.id,
                         type,
                         rewardAmount,
                         rewarded: true,
@@ -209,6 +213,7 @@ export class ResourceManager {
                     total = this.inventory.addResource(type, rewardAmount);
                 }
                 return {
+                    nodeId: node.id,
                     type,
                     rewardAmount,
                     rewarded: rewardAmount > 0,
@@ -222,6 +227,7 @@ export class ResourceManager {
             }
 
             return {
+                nodeId: node.id,
                 type,
                 rewardAmount: 0,
                 rewarded: false,

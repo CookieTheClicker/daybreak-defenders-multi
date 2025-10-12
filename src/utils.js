@@ -1,4 +1,6 @@
-﻿export function clamp(value, min, max) {
+import { random } from "./rng.js";
+
+export function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
@@ -13,8 +15,8 @@ export function lerp(a, b, t) {
 }
 
 export function randomInCircle(radius) {
-    const angle = Math.random() * Math.PI * 2;
-    const r = radius * Math.sqrt(Math.random());
+    const angle = random() * Math.PI * 2;
+    const r = radius * Math.sqrt(random());
     return { x: Math.cos(angle) * r, y: Math.sin(angle) * r };
 }
 
@@ -32,3 +34,4 @@ export function pointInCircle(point, circle) {
     const dy = point.y - circle.y;
     return dx * dx + dy * dy <= circle.radius * circle.radius;
 }
+

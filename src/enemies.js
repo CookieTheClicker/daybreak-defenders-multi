@@ -1,20 +1,21 @@
 import { ENEMY_STATS, WORLD_SETTINGS } from "./constants.js";
 import { distance } from "./utils.js";
 import { getAsset } from "./assets.js";
+import { random } from "./rng.js";
 
 function randomSpawnPosition() {
-    const edge = Math.floor(Math.random() * 4);
+    const edge = Math.floor(random() * 4);
     const { x, y } = WORLD_SETTINGS.housePosition;
     const radius = WORLD_SETTINGS.resourceRadius + 260;
     switch (edge) {
         case 0:
-            return { x: x - radius, y: y - radius + Math.random() * radius * 2 };
+            return { x: x - radius, y: y - radius + random() * radius * 2 };
         case 1:
-            return { x: x + radius, y: y - radius + Math.random() * radius * 2 };
+            return { x: x + radius, y: y - radius + random() * radius * 2 };
         case 2:
-            return { x: x - radius + Math.random() * radius * 2, y: y - radius };
+            return { x: x - radius + random() * radius * 2, y: y - radius };
         default:
-            return { x: x - radius + Math.random() * radius * 2, y: y + radius };
+            return { x: x - radius + random() * radius * 2, y: y + radius };
     }
 }
 
@@ -204,8 +205,8 @@ export class EnemyWaveManager {
                 events.playerHits.push({ enemy, ...result.playerHit });
             }
             if (wasAlive && !enemy.alive) {
-                if (inventory && Math.random() < 0.35) {
-                    const loot = Math.random() < 0.5
+                if (inventory && random() < 0.35) {
+                    const loot = random() < 0.5
                         ? {
                             name: "Scrap",
                             icon: "[S]",

@@ -2,6 +2,7 @@ import { STRUCTURE_TYPES } from "./constants.js";
 import { getAsset, resolveItemIconPath, resolveItemWorldAsset, resolveItemWorldScale, resolveStructureIconPath } from "./assets.js";
 import { distance, clamp } from "./utils.js";
 import { createBerryItem } from "./inventory.js";
+import { random, randomId } from "./rng.js";
 
 const CHEST_TYPES = [
     { key: "common", weight: 1, rolls: [1, 2], color: "#c49b66" },
@@ -47,9 +48,9 @@ function pickWeighted(entries, qualityModifier = 1) {
         return sum + (entry.weight ?? 1) * tierBoost;
     }, 0);
     if (weightSum <= 0) {
-        return entries[Math.floor(Math.random() * entries.length)];
+        return entries[Math.floor(random() * entries.length)];
     }
-    let pick = Math.random() * weightSum;
+    let pick = random() * weightSum;
     for (const entry of entries) {
         const tierBoost = entry.tier ? 1 + ((entry.tier - 1) * 0.35 * (qualityModifier - 1)) : 1;
         const weight = (entry.weight ?? 1) * tierBoost;
@@ -66,7 +67,7 @@ function rollResource(modifiers) {
     if (!entry) {
         return null;
     }
-    const amount = Math.round((entry.min + Math.random() * (entry.max - entry.min)) * (modifiers.resourceYield ?? 1));
+    const amount = Math.round((entry.min + random() * (entry.max - entry.min)) * (modifiers.resourceYield ?? 1));
     return {
         type: "resource",
         resource: entry.resource,
@@ -153,8 +154,8 @@ function randomPosition(world) {
     const height = world.getHeight();
     const margin = 120;
     return {
-        x: margin + Math.random() * (width - margin * 2),
-        y: margin + Math.random() * (height - margin * 2)
+        x: margin + random() * (width - margin * 2),
+        y: margin + random() * (height - margin * 2)
     };
 }
 
@@ -203,7 +204,7 @@ export class LootManager {
         }
         position = clampToWorld(position, this.world);
         return {
-            id: `chest-${Date.now()}-${Math.random()}`,
+            id: randomId("chest"),
             type: type.key,
             position,
             opened: false,
@@ -363,7 +364,7 @@ function rollChestType(modifiers) {
         return { ...type, effective: (type.weight ?? 1) * boost };
     });
     const total = adjusted.reduce((sum, type) => sum + type.effective, 0);
-    let pick = Math.random() * total;
+    let pick = random() * total;
     for (const type of adjusted) {
         if (pick <= type.effective) {
             return type;
@@ -375,15 +376,15 @@ function rollChestType(modifiers) {
 
 function rollChestLoot(chestType, modifiers) {
     const [minRolls, maxRolls] = chestType.rolls;
-    const rolls = Math.max(minRolls, Math.ceil(minRolls + Math.random() * (maxRolls - minRolls)));
+    const rolls = Math.max(minRolls, Math.ceil(minRolls + random() * (maxRolls - minRolls)));
     const loot = [];
     for (let i = 0; i < rolls; i++) {
-        const categoryRoll = Math.random();
+        const categoryRoll = random();
         let entry = null;
         if (categoryRoll < 0.45) {
             entry = rollResource(modifiers);
         } else if (categoryRoll < 0.85) {
-            const equipmentRoll = Math.random();
+            const equipmentRoll = random();
             if (equipmentRoll < 0.33) {
                 entry = rollWeapon(modifiers);
             } else if (equipmentRoll < 0.66) {

@@ -21,6 +21,7 @@ import { EffectManager } from "./effects.js";
 import { loadAssets, getAsset } from "./assets.js";
 import { clamp } from "./utils.js";
 import { setupMultiplayer } from "./multiplayer_integration_example.js";
+import { setRandomSeed, ensureSeed, getRandomSeed } from "./rng.js";
 
 const CRAFTABLE_STRUCTURES = ["barricade", "spike", "turret"];
 const STRUCTURE_ICON_PATHS = {
@@ -36,6 +37,9 @@ function formatName(word = "") {
 
 (async function init() {
     await loadAssets();
+
+    const defaultSeed = ensureSeed(Date.now());
+    setRandomSeed(defaultSeed);
 
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
@@ -129,7 +133,8 @@ function formatName(word = "") {
         lastPlayerMaxHealth: player.maxHealth,
         playerDamageFlash: 0,
         selectedInventoryIndex: -1,
-        berryHintShown: false
+        berryHintShown: false,
+        worldSeed: defaultSeed
     };
 
 

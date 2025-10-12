@@ -1,3 +1,5 @@
+import { random } from "./rng.js";
+
 class FloatingText {
     constructor(text, position, color = "#7be0a6") {
         this.text = text;
@@ -5,7 +7,7 @@ class FloatingText {
         this.color = color;
         this.lifetime = 1.2;
         this.elapsed = 0;
-        this.velocity = { x: (Math.random() - 0.5) * 20, y: -60 };
+        this.velocity = { x: (random() - 0.5) * 20, y: -60 };
         this.alpha = 1;
     }
 
