@@ -20,6 +20,7 @@ import { LootManager } from "./loot.js";
 import { EffectManager } from "./effects.js";
 import { loadAssets, getAsset } from "./assets.js";
 import { clamp } from "./utils.js";
+import { setupMultiplayer } from "./multiplayer_integration_example.js";
 
 const CRAFTABLE_STRUCTURES = ["barricade", "spike", "turret"];
 const STRUCTURE_ICON_PATHS = {
@@ -48,6 +49,27 @@ function formatName(word = "") {
         playerDamageMultiplier: difficultySettings.playerDamageMultiplier,
         baseDamageReduction: difficultySettings.baseDamageReduction
     });
+    let remotePlayers = {};
+    const playerVelocity = { x: 0, y: 0 };
+    const lastPlayerPosition = { x: player.position.x, y: player.position.y };
+
+    setupMultiplayer(
+        () => ({
+            x: player.position.x,
+            y: player.position.y,
+            dir: Number.isFinite(player.lastAimAngle) ? player.lastAimAngle : 0,
+            hp: Number.isFinite(player.health) ? player.health : 100,
+            anim: player.swingTimer > 0 ? "attack" : "idle",
+            vx: Number.isFinite(playerVelocity.x) ? playerVelocity.x : 0,
+            vy: Number.isFinite(playerVelocity.y) ? playerVelocity.y : 0
+        }),
+        (peers) => {
+            remotePlayers = peers ?? {};
+        }
+    );
+
+    window.remotePlayers = () => remotePlayers;
+
     const inventory = new Inventory();
     const resources = new ResourceManager(inventory, world, undefined, {
         resourceYieldMultiplier: difficultySettings.resourceYieldMultiplier
@@ -1499,15 +1521,32 @@ function handleInput(deltaSeconds) {
             gameState.currentBuildSelection = null;
             refreshResourceUI();
         }
+        playerVelocity.x = 0;
+        playerVelocity.y = 0;
+        lastPlayerPosition.x = player.position.x;
+        lastPlayerPosition.y = player.position.y;
         return;
     }
 
     if (gameState.gameOver) {
         player.update(0, input);
+        playerVelocity.x = 0;
+        playerVelocity.y = 0;
+        lastPlayerPosition.x = player.position.x;
+        lastPlayerPosition.y = player.position.y;
         return;
     }
 
     player.update(deltaSeconds, input);
+    if (deltaSeconds > 0) {
+        playerVelocity.x = (player.position.x - lastPlayerPosition.x) / deltaSeconds;
+        playerVelocity.y = (player.position.y - lastPlayerPosition.y) / deltaSeconds;
+    } else {
+        playerVelocity.x = 0;
+        playerVelocity.y = 0;
+    }
+    lastPlayerPosition.x = player.position.x;
+    lastPlayerPosition.y = player.position.y;
 
     if (input.interact) {
         if (world.isNearHouseDoor(player.position, world.house.door.radius * 0.85)) {
@@ -2070,6 +2109,20 @@ function updateGame(deltaSeconds) {
             }
             const pointer = { x: Number.isFinite(input.mouse.worldX) ? input.mouse.worldX : player.position.x, y: Number.isFinite(input.mouse.worldY) ? input.mouse.worldY : player.position.y };
             player.draw(ctx, gameState.camera, pointer);
+            for (const [id, p] of Object.entries(remotePlayers)) {
+                if (!p || (window.__MP__?.id && id === window.__MP__.id)) {
+                    continue;
+                }
+                const drawX = (Number.isFinite(p.x) ? p.x : player.position.x) - gameState.camera.x;
+                const drawY = (Number.isFinite(p.y) ? p.y : player.position.y) - gameState.camera.y;
+                ctx.save();
+                ctx.globalAlpha = 0.7;
+                ctx.fillStyle = "#7be0a6";
+                ctx.beginPath();
+                ctx.arc(drawX, drawY, 10, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
             effects.draw(ctx, gameState.camera);
 
             if (gameState.phase === "night") {
