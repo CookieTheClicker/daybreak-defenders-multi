@@ -29,14 +29,14 @@ const STRUCTURE_ICON_PATHS = {
     barricade: "assets/props/barricade.png",
     spike: "assets/props/spike.png",
     turret: "assets/props/turret.png"
-};
+}
 
 function formatName(word = "") {
     if (!word) return "";
     return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
-(async function init() {
+const init = async () => {
     await loadAssets();
 
     const defaultSeed = ensureSeed(Date.now());
@@ -1814,6 +1814,7 @@ function buildCraftingMenuData() {
         resources: resourcesSnapshot,
         options
 }
+}
 
 function refreshCraftingMenu(force = false, dataOverride = null) {
     if (!gameState.craftingOpen) {
@@ -2612,7 +2613,9 @@ function updateGame(deltaSeconds) {
     }
 
     requestAnimationFrame(gameLoop);
-})().catch((error) => {
+}
+
+init().catch((error) => {
     console.error("Failed to initialize game", error);
 });
 
