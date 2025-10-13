@@ -622,6 +622,7 @@ function formatName(word = "") {
             spike: "#d36b5f",
             turret: "#84b6ff"
         }
+    };
 
     const houseInterior = {
         width: 520,
@@ -649,6 +650,7 @@ function formatName(word = "") {
             height: 72,
             radius: 72
         }
+    };
     const doorReachY = Math.max(
         houseInterior.door.position.y - 12,
         houseInterior.height - houseInterior.wallThickness - 28
@@ -658,10 +660,12 @@ function formatName(word = "") {
         maxX: houseInterior.width - houseInterior.wallThickness - 34,
         minY: houseInterior.wallThickness + 28,
         maxY: Math.min(doorReachY, houseInterior.height - 36)
+    };
 
     const interiorState = {
         position: { ...houseInterior.spawn },
         speed: 140
+    };
 
     resources.onDayStart(gameState.dayNumber);
     loot.onDayStart(gameState.dayNumber);
@@ -1193,6 +1197,7 @@ function handleInventoryReorder(details) {
         radius: 0,
         active: false,
         sprintActive: false
+    };
     const JOYSTICK_DEADZONE = 0.32;
 
     function resetJoystickVisual() {
@@ -1865,6 +1870,7 @@ function attemptCraftStructure(typeKey) {
         structureType: typeKey,
         iconPath: STRUCTURE_ICON_PATHS[typeKey],
         stackable: true
+    };
 
     const canStoreKit = inventory.canAddItem
         ? inventory.canAddItem(kitItem)
@@ -2606,7 +2612,9 @@ function updateGame(deltaSeconds) {
     }
 
     requestAnimationFrame(gameLoop);
-})();
+})().catch((error) => {
+    console.error("Failed to initialize game", error);
+});
 
 
 
