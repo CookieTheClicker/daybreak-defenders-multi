@@ -109,6 +109,7 @@ function formatName(word = "") {
         menu: startMenuPanel,
         difficulty: startDifficultyPanel,
         multiplayer: startMultiplayerPanel
+    };
     const startSingleplayerButton = document.getElementById("start-singleplayer");
     const startMultiplayerButton = document.getElementById("start-multiplayer");
     const startSettingsButton = document.getElementById("start-settings");
