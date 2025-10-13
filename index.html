@@ -231,16 +231,9 @@
         </div>
     </div>
 
-    <script type="module" src="src/main.js"></script>
-
     <!-- Multiplayer dependencies -->
     <script src="/socket.io/socket.io.js"></script>
-    <script type="module">
-      import Multiplayer from "./src/multiplayer.js";
-      window.__MP__ = new Multiplayer();
-      window.__MP__.connect();
-      console.log("[Multiplayer] client initialized");
-    </script>
+    <script type="module" src="src/main.js"></script>
     
 </body>
 </html>

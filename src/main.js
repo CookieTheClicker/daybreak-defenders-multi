@@ -20,6 +20,7 @@ import { LootManager } from "./loot.js";
 import { EffectManager } from "./effects.js";
 import { loadAssets, getAsset } from "./assets.js";
 import { clamp } from "./utils.js";
+import Multiplayer from "./multiplayer.js";
 import { setupMultiplayer } from "./multiplayer_integration_example.js";
 import { setRandomSeed, ensureSeed } from "./rng.js";
 
@@ -53,103 +54,23 @@ function formatName(word = "") {
         playerDamageMultiplier: difficultySettings.playerDamageMultiplier,
         baseDamageReduction: difficultySettings.baseDamageReduction
     });
+    const multiplayerClient = new Multiplayer();
+    window.__MP__ = multiplayerClient;
+    multiplayerClient.connect();
     let remotePlayers = {};
+    const multiplayerState = {
+        connected: false,
+        lobbyId: null,
+        hostId: null,
+        seed: defaultSeed,
+        isHost: false,
+        members: [],
+        started: false
+    };
+    window.multiplayerState = multiplayerState;
+    let multiplayerInstance = null;
     const playerVelocity = { x: 0, y: 0 };
     const lastPlayerPosition = { x: player.position.x, y: player.position.y };
-
-    multiplayerInstance = setupMultiplayer(
-        () => ({
-            x: player.position.x,
-            y: player.position.y,
-            dir: Number.isFinite(player.lastAimAngle) ? player.lastAimAngle : 0,
-            hp: Number.isFinite(player.health) ? player.health : 100,
-            anim: player.swingTimer > 0 ? "attack" : "idle",
-            vx: Number.isFinite(playerVelocity.x) ? playerVelocity.x : 0,
-            vy: Number.isFinite(playerVelocity.y) ? playerVelocity.y : 0
-        }),
-        (peers) => {
-            remotePlayers = peers ?? {};
-        }
-    );
-
-    window.remotePlayers = () => remotePlayers;
-    window.multiplayerState = multiplayerState;
-
-    if (multiplayerInstance) {
-        multiplayerState.connected = true;
-        if (mpNameInput && mpNameInput.value.trim()) {
-            multiplayerInstance.playerName = mpNameInput.value.trim();
-        }
-
-        multiplayerInstance.onPeers((peers) => {
-            remotePlayers = peers ?? {};
-        });
-
-        multiplayerInstance.onLobbyUpdate((snapshot) => {
-            multiplayerState.lobbyId = snapshot?.lobbyId || null;
-            multiplayerState.hostId = snapshot?.hostId || null;
-            multiplayerState.isHost = Boolean(snapshot?.hostId && multiplayerInstance.id === snapshot.hostId);
-            if (Number.isFinite(snapshot?.seed)) {
-                multiplayerState.seed = snapshot.seed >>> 0;
-            }
-            multiplayerState.members = Array.isArray(snapshot?.members) ? snapshot.members : [];
-            multiplayerState.started = Boolean(snapshot?.started);
-            if (!multiplayerState.started && multiplayerState.seed != null) {
-                applyWorldSeed(multiplayerState.seed, { force: true });
-            }
-            updateLobbyUI();
-        });
-
-        multiplayerInstance.onLobbySeed(({ seed }) => {
-            if (Number.isFinite(seed)) {
-                multiplayerState.seed = seed >>> 0;
-                applyWorldSeed(multiplayerState.seed, { force: true });
-                if (mpLobbySeed) {
-                    mpLobbySeed.textContent = multiplayerState.seed;
-                }
-                setLobbyStatus("Seed synchronised.");
-            }
-        });
-
-        multiplayerInstance.onLobbyLeft(() => {
-            multiplayerState.lobbyId = null;
-            multiplayerState.hostId = null;
-            multiplayerState.isHost = false;
-            multiplayerState.members = [];
-            multiplayerState.started = false;
-            multiplayerState.seed = defaultSeed;
-            remotePlayers = {};
-            window.remotePlayers = () => remotePlayers;
-            updateLobbyUI();
-            showStartPanel("menu");
-        });
-
-        multiplayerInstance.onLobbyStarted(({ seed }) => {
-            if (Number.isFinite(seed)) {
-                multiplayerState.seed = seed >>> 0;
-            }
-            setLobbyStatus("Match starting...");
-            startMultiplayerGame();
-        });
-
-        multiplayerInstance.onLobbyError((error) => {
-            if (!error) return;
-            setLobbyStatus(error.error ? `Lobby error: ${error.error}` : "Lobby error.", true);
-        });
-
-        multiplayerInstance.onEvent("difficulty", ({ payload }) => {
-            const key = payload?.key;
-            if (key && DIFFICULTY_PRESETS[key]) {
-                pendingDifficultyIntent = "multiplayer";
-                updateDifficultySelection(key);
-            }
-        });
-    } else {
-        setLobbyStatus("Multiplayer client unavailable. Socket.IO missing?", true);
-        if (startMultiplayerButton) {
-            startMultiplayerButton.disabled = true;
-        }
-    }
 
     const inventory = new Inventory();
     const resources = new ResourceManager(inventory, world, undefined, {
@@ -188,7 +109,6 @@ function formatName(word = "") {
         menu: startMenuPanel,
         difficulty: startDifficultyPanel,
         multiplayer: startMultiplayerPanel
-    };
     const startSingleplayerButton = document.getElementById("start-singleplayer");
     const startMultiplayerButton = document.getElementById("start-multiplayer");
     const startSettingsButton = document.getElementById("start-settings");
@@ -251,19 +171,8 @@ function formatName(word = "") {
         selectedInventoryIndex: -1,
         berryHintShown: false,
         worldSeed: defaultSeed
-    };
 
 
-    let multiplayerInstance = null;
-    const multiplayerState = {
-        connected: false,
-        lobbyId: null,
-        hostId: null,
-        seed: defaultSeed,
-        isHost: false,
-        members: [],
-        started: false
-    };
 
     let lastCraftingMenuSignature = null;
     let pendingDifficultyIntent = "singleplayer";
@@ -584,6 +493,98 @@ function formatName(word = "") {
 
     updateLobbyUI();
 
+    window.remotePlayers = () => remotePlayers;
+
+    multiplayerInstance = setupMultiplayer(
+        () => ({
+            x: player.position.x,
+            y: player.position.y,
+            dir: Number.isFinite(player.lastAimAngle) ? player.lastAimAngle : 0,
+            hp: Number.isFinite(player.health) ? player.health : 100,
+            anim: player.swingTimer > 0 ? "attack" : "idle",
+            vx: Number.isFinite(playerVelocity.x) ? playerVelocity.x : 0,
+            vy: Number.isFinite(playerVelocity.y) ? playerVelocity.y : 0
+        }),
+        (peers) => {
+            remotePlayers = peers ?? {};
+        }
+    );
+
+    if (multiplayerInstance) {
+        multiplayerState.connected = true;
+        if (mpNameInput && mpNameInput.value.trim()) {
+            multiplayerInstance.playerName = mpNameInput.value.trim();
+        }
+
+        multiplayerInstance.onPeers((peers) => {
+            remotePlayers = peers ?? {};
+        });
+
+        multiplayerInstance.onLobbyUpdate((snapshot) => {
+            multiplayerState.lobbyId = snapshot?.lobbyId || null;
+            multiplayerState.hostId = snapshot?.hostId || null;
+            multiplayerState.isHost = Boolean(snapshot?.hostId && multiplayerInstance.id === snapshot.hostId);
+            if (Number.isFinite(snapshot?.seed)) {
+                multiplayerState.seed = snapshot.seed >>> 0;
+            }
+            multiplayerState.members = Array.isArray(snapshot?.members) ? snapshot.members : [];
+            multiplayerState.started = Boolean(snapshot?.started);
+            if (!multiplayerState.started && multiplayerState.seed != null) {
+                applyWorldSeed(multiplayerState.seed, { force: true });
+            }
+            updateLobbyUI();
+        });
+
+        multiplayerInstance.onLobbySeed(({ seed }) => {
+            if (Number.isFinite(seed)) {
+                multiplayerState.seed = seed >>> 0;
+                applyWorldSeed(multiplayerState.seed, { force: true });
+                if (mpLobbySeed) {
+                    mpLobbySeed.textContent = multiplayerState.seed;
+                }
+                setLobbyStatus("Seed synchronised.");
+            }
+        });
+
+        multiplayerInstance.onLobbyLeft(() => {
+            multiplayerState.lobbyId = null;
+            multiplayerState.hostId = null;
+            multiplayerState.isHost = false;
+            multiplayerState.members = [];
+            multiplayerState.started = false;
+            multiplayerState.seed = defaultSeed;
+            remotePlayers = {};
+            updateLobbyUI();
+            showStartPanel("menu");
+        });
+
+        multiplayerInstance.onLobbyStarted(({ seed }) => {
+            if (Number.isFinite(seed)) {
+                multiplayerState.seed = seed >>> 0;
+            }
+            setLobbyStatus("Match starting...");
+            startMultiplayerGame();
+        });
+
+        multiplayerInstance.onLobbyError((error) => {
+            if (!error) return;
+            setLobbyStatus(error.error ? `Lobby error: ${error.error}` : "Lobby error.", true);
+        });
+
+        multiplayerInstance.onEvent("difficulty", ({ payload }) => {
+            const key = payload?.key;
+            if (key && DIFFICULTY_PRESETS[key]) {
+                pendingDifficultyIntent = "multiplayer";
+                updateDifficultySelection(key);
+            }
+        });
+    } else {
+        setLobbyStatus("Multiplayer client unavailable. Socket.IO missing?", true);
+        if (startMultiplayerButton) {
+            startMultiplayerButton.disabled = true;
+        }
+    }
+
     function updatePauseButtonState() {
         if (!pauseToggleButton) {
             return;
@@ -620,7 +621,6 @@ function formatName(word = "") {
             spike: "#d36b5f",
             turret: "#84b6ff"
         }
-    };
 
     const houseInterior = {
         width: 520,
@@ -648,7 +648,6 @@ function formatName(word = "") {
             height: 72,
             radius: 72
         }
-    };
     const doorReachY = Math.max(
         houseInterior.door.position.y - 12,
         houseInterior.height - houseInterior.wallThickness - 28
@@ -658,12 +657,10 @@ function formatName(word = "") {
         maxX: houseInterior.width - houseInterior.wallThickness - 34,
         minY: houseInterior.wallThickness + 28,
         maxY: Math.min(doorReachY, houseInterior.height - 36)
-    };
 
     const interiorState = {
         position: { ...houseInterior.spawn },
         speed: 140
-    };
 
     resources.onDayStart(gameState.dayNumber);
     loot.onDayStart(gameState.dayNumber);
@@ -1195,7 +1192,6 @@ function handleInventoryReorder(details) {
         radius: 0,
         active: false,
         sprintActive: false
-    };
     const JOYSTICK_DEADZONE = 0.32;
 
     function resetJoystickVisual() {
@@ -1811,7 +1807,6 @@ function buildCraftingMenuData() {
     return {
         resources: resourcesSnapshot,
         options
-    };
 }
 
 function refreshCraftingMenu(force = false, dataOverride = null) {
@@ -1869,7 +1864,6 @@ function attemptCraftStructure(typeKey) {
         structureType: typeKey,
         iconPath: STRUCTURE_ICON_PATHS[typeKey],
         stackable: true
-    };
 
     const canStoreKit = inventory.canAddItem
         ? inventory.canAddItem(kitItem)
