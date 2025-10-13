@@ -172,7 +172,7 @@ function formatName(word = "") {
         selectedInventoryIndex: -1,
         berryHintShown: false,
         worldSeed: defaultSeed
-
+    };
 
 
     let lastCraftingMenuSignature = null;
