@@ -6,7 +6,7 @@ export function setupMultiplayer(getLocalState, onPeersUpdate) {
   const mp = window.__MP__;
   if (!mp) {
     console.warn("Multiplayer not initialized");
-    return;
+    return null;
   }
   mp.setLocalStateProvider(() => {
     // Expect getLocalState to return an object like:
@@ -22,4 +22,5 @@ export function setupMultiplayer(getLocalState, onPeersUpdate) {
   // Optional: events example
   // mp.onEvent("projectile", ({ payload, from }) => spawnProjectile(payload, from));
   // To emit: mp.emit("projectile", { x, y, vx, vy, type: "arrow" });
+  return mp;
 }

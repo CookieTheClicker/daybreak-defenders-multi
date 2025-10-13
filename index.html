@@ -11,14 +11,83 @@
         <canvas id="gameCanvas" width="1280" height="896" tabindex="0"></canvas>
 
         <div id="start-overlay" aria-hidden="false">
-            <div class="start-panel">
+            <div class="start-panel" id="start-menu-panel" data-panel="menu">
                 <h1>Daybreak Defenders</h1>
-                <p>Select a difficulty to begin.</p>
+                <p class="start-subtitle">Choose how you want to play.</p>
+                <div class="start-menu-grid">
+                    <button id="start-singleplayer" class="start-menu-button primary" type="button">Singleplayer</button>
+                    <button id="start-multiplayer" class="start-menu-button primary" type="button">Multiplayer</button>
+                    <button id="start-settings" class="start-menu-button ghost" type="button">Settings</button>
+                    <button id="start-difficulty" class="start-menu-button ghost" type="button">Difficulty</button>
+                </div>
+                <p class="start-hint">Open two tabs in multiplayer to defend together.</p>
+            </div>
+
+            <div class="start-panel start-hidden" id="start-difficulty-panel" data-panel="difficulty">
+                <div class="panel-header">
+                    <button class="start-back ghost" data-target="menu" type="button">Back</button>
+                </div>
+                <h2>Select a difficulty</h2>
+                <p class="start-subtitle">Difficulty applies to both singleplayer and multiplayer.</p>
                 <div class="difficulty-grid">
                     <button class="difficulty-button" data-difficulty="easy" aria-pressed="false">Easy</button>
                     <button class="difficulty-button active" data-difficulty="normal" aria-pressed="true">Normal</button>
                     <button class="difficulty-button" data-difficulty="hard" aria-pressed="false">Hard</button>
                     <button class="difficulty-button" data-difficulty="insane" aria-pressed="false">Insane</button>
+                </div>
+                <p class="start-hint">Select one to begin singleplayer or prepare for multiplayer.</p>
+            </div>
+
+            <div class="start-panel start-hidden" id="start-multiplayer-panel" data-panel="multiplayer">
+                <div class="panel-header">
+                    <button class="start-back ghost" data-target="menu" type="button">Back</button>
+                </div>
+                <h2>Multiplayer Lobby</h2>
+                <p class="start-subtitle" id="mp-status">Create a lobby or join with a code.</p>
+
+                <div class="mp-inline-fields">
+                    <label for="mp-name-input" class="mp-field">
+                        Display Name
+                        <input type="text" id="mp-name-input" maxlength="32" placeholder="Player" autocomplete="name">
+                    </label>
+                </div>
+
+                    <div class="mp-actions" id="mp-actions">
+                        <div class="mp-field mp-create">
+                            <label for="mp-seed-input">Seed (optional)</label>
+                            <input type="text" id="mp-seed-input" maxlength="32" placeholder="Random if empty" autocomplete="off">
+                            <button type="button" id="mp-create-btn" class="primary">Create Lobby</button>
+                        </div>
+                        <form id="mp-join-form" class="mp-field mp-join" autocomplete="off">
+                            <label for="mp-join-code">Join Code</label>
+                            <input type="text" id="mp-join-code" maxlength="8" placeholder="ABCDE" autocomplete="off">
+                            <button type="submit" class="primary">Join Lobby</button>
+                        </form>
+                    </div>
+
+                <div id="mp-lobby-info" class="mp-lobby start-hidden" aria-live="polite">
+                    <div class="mp-lobby-row">
+                        <span>Lobby Code</span>
+                        <strong id="mp-lobby-code">----</strong>
+                        <button type="button" id="mp-copy-code" class="ghost small">Copy</button>
+                    </div>
+                    <div class="mp-lobby-row">
+                        <span>Seed</span>
+                        <strong id="mp-lobby-seed">—</strong>
+                        <button type="button" id="mp-new-seed" class="ghost small">New</button>
+                    </div>
+                    <div class="mp-lobby-row">
+                        <span>Difficulty</span>
+                        <select id="mp-difficulty-select"></select>
+                    </div>
+                    <div id="mp-member-container">
+                        <p class="mp-subtitle">Players</p>
+                        <ul id="mp-member-list"></ul>
+                    </div>
+                    <div class="mp-lobby-actions">
+                        <button type="button" id="mp-start-btn" class="primary">Start Game</button>
+                        <button type="button" id="mp-leave-btn" class="ghost">Leave Lobby</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -175,4 +244,3 @@
     
 </body>
 </html>
-

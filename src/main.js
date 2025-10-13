@@ -21,7 +21,7 @@ import { EffectManager } from "./effects.js";
 import { loadAssets, getAsset } from "./assets.js";
 import { clamp } from "./utils.js";
 import { setupMultiplayer } from "./multiplayer_integration_example.js";
-import { setRandomSeed, ensureSeed, getRandomSeed } from "./rng.js";
+import { setRandomSeed, ensureSeed } from "./rng.js";
 
 const CRAFTABLE_STRUCTURES = ["barricade", "spike", "turret"];
 const STRUCTURE_ICON_PATHS = {
@@ -57,7 +57,7 @@ function formatName(word = "") {
     const playerVelocity = { x: 0, y: 0 };
     const lastPlayerPosition = { x: player.position.x, y: player.position.y };
 
-    setupMultiplayer(
+    multiplayerInstance = setupMultiplayer(
         () => ({
             x: player.position.x,
             y: player.position.y,
@@ -73,6 +73,83 @@ function formatName(word = "") {
     );
 
     window.remotePlayers = () => remotePlayers;
+    window.multiplayerState = multiplayerState;
+
+    if (multiplayerInstance) {
+        multiplayerState.connected = true;
+        if (mpNameInput && mpNameInput.value.trim()) {
+            multiplayerInstance.playerName = mpNameInput.value.trim();
+        }
+
+        multiplayerInstance.onPeers((peers) => {
+            remotePlayers = peers ?? {};
+        });
+
+        multiplayerInstance.onLobbyUpdate((snapshot) => {
+            multiplayerState.lobbyId = snapshot?.lobbyId || null;
+            multiplayerState.hostId = snapshot?.hostId || null;
+            multiplayerState.isHost = Boolean(snapshot?.hostId && multiplayerInstance.id === snapshot.hostId);
+            if (Number.isFinite(snapshot?.seed)) {
+                multiplayerState.seed = snapshot.seed >>> 0;
+            }
+            multiplayerState.members = Array.isArray(snapshot?.members) ? snapshot.members : [];
+            multiplayerState.started = Boolean(snapshot?.started);
+            if (!multiplayerState.started && multiplayerState.seed != null) {
+                applyWorldSeed(multiplayerState.seed, { force: true });
+            }
+            updateLobbyUI();
+        });
+
+        multiplayerInstance.onLobbySeed(({ seed }) => {
+            if (Number.isFinite(seed)) {
+                multiplayerState.seed = seed >>> 0;
+                applyWorldSeed(multiplayerState.seed, { force: true });
+                if (mpLobbySeed) {
+                    mpLobbySeed.textContent = multiplayerState.seed;
+                }
+                setLobbyStatus("Seed synchronised.");
+            }
+        });
+
+        multiplayerInstance.onLobbyLeft(() => {
+            multiplayerState.lobbyId = null;
+            multiplayerState.hostId = null;
+            multiplayerState.isHost = false;
+            multiplayerState.members = [];
+            multiplayerState.started = false;
+            multiplayerState.seed = defaultSeed;
+            remotePlayers = {};
+            window.remotePlayers = () => remotePlayers;
+            updateLobbyUI();
+            showStartPanel("menu");
+        });
+
+        multiplayerInstance.onLobbyStarted(({ seed }) => {
+            if (Number.isFinite(seed)) {
+                multiplayerState.seed = seed >>> 0;
+            }
+            setLobbyStatus("Match starting...");
+            startMultiplayerGame();
+        });
+
+        multiplayerInstance.onLobbyError((error) => {
+            if (!error) return;
+            setLobbyStatus(error.error ? `Lobby error: ${error.error}` : "Lobby error.", true);
+        });
+
+        multiplayerInstance.onEvent("difficulty", ({ payload }) => {
+            const key = payload?.key;
+            if (key && DIFFICULTY_PRESETS[key]) {
+                pendingDifficultyIntent = "multiplayer";
+                updateDifficultySelection(key);
+            }
+        });
+    } else {
+        setLobbyStatus("Multiplayer client unavailable. Socket.IO missing?", true);
+        if (startMultiplayerButton) {
+            startMultiplayerButton.disabled = true;
+        }
+    }
 
     const inventory = new Inventory();
     const resources = new ResourceManager(inventory, world, undefined, {
@@ -104,7 +181,46 @@ function formatName(word = "") {
     const restartButton = document.getElementById("game-restart");
     const gameOverOverlay = document.getElementById("game-over-overlay");
     const startOverlay = document.getElementById("start-overlay");
+    const startMenuPanel = document.getElementById("start-menu-panel");
+    const startDifficultyPanel = document.getElementById("start-difficulty-panel");
+    const startMultiplayerPanel = document.getElementById("start-multiplayer-panel");
+    const startPanels = {
+        menu: startMenuPanel,
+        difficulty: startDifficultyPanel,
+        multiplayer: startMultiplayerPanel
+    };
+    const startSingleplayerButton = document.getElementById("start-singleplayer");
+    const startMultiplayerButton = document.getElementById("start-multiplayer");
+    const startSettingsButton = document.getElementById("start-settings");
+    const startDifficultyButton = document.getElementById("start-difficulty");
+    const startBackButtons = startOverlay ? Array.from(startOverlay.querySelectorAll(".start-back")) : [];
     const difficultyButtons = startOverlay ? Array.from(startOverlay.querySelectorAll("[data-difficulty]")) : [];
+    const mpStatusLabel = document.getElementById("mp-status");
+    const mpNameInput = document.getElementById("mp-name-input");
+    const mpSeedInput = document.getElementById("mp-seed-input");
+    const mpCreateButton = document.getElementById("mp-create-btn");
+    const mpJoinForm = document.getElementById("mp-join-form");
+    const mpJoinCodeInput = document.getElementById("mp-join-code");
+    const mpActions = document.getElementById("mp-actions");
+    const mpLobbyInfo = document.getElementById("mp-lobby-info");
+    const mpLobbyCode = document.getElementById("mp-lobby-code");
+    const mpCopyCodeButton = document.getElementById("mp-copy-code");
+    const mpLobbySeed = document.getElementById("mp-lobby-seed");
+    const mpNewSeedButton = document.getElementById("mp-new-seed");
+    const mpDifficultySelect = document.getElementById("mp-difficulty-select");
+    const mpMemberList = document.getElementById("mp-member-list");
+    const mpStartButton = document.getElementById("mp-start-btn");
+    const mpLeaveButton = document.getElementById("mp-leave-btn");
+    if (mpDifficultySelect) {
+        mpDifficultySelect.innerHTML = "";
+        Object.values(DIFFICULTY_PRESETS).forEach((preset) => {
+            const option = document.createElement("option");
+            option.value = preset.key;
+            option.textContent = preset.label ?? formatName(preset.key);
+            mpDifficultySelect.append(option);
+        });
+        mpDifficultySelect.value = DEFAULT_DIFFICULTY;
+    }
     ui.bindCraftingHandler(attemptCraftStructure);
     ui.bindInventoryItemHandler(handleInventoryItemUse);
     ui.bindInventoryReorderHandler(handleInventoryReorder);
@@ -138,7 +254,335 @@ function formatName(word = "") {
     };
 
 
+    let multiplayerInstance = null;
+    const multiplayerState = {
+        connected: false,
+        lobbyId: null,
+        hostId: null,
+        seed: defaultSeed,
+        isHost: false,
+        members: [],
+        started: false
+    };
+
     let lastCraftingMenuSignature = null;
+    let pendingDifficultyIntent = "singleplayer";
+
+    function showStartPanel(panelKey = "menu") {
+        const key = startPanels[panelKey] ? panelKey : "menu";
+        Object.entries(startPanels).forEach(([candidate, panel]) => {
+            if (!panel) return;
+            const hidden = candidate !== key;
+            panel.classList.toggle("start-hidden", hidden);
+            panel.setAttribute("aria-hidden", hidden ? "true" : "false");
+        });
+    }
+
+    showStartPanel("menu");
+    setLobbyStatus("Create a lobby or join with a code.");
+
+    function setLobbyStatus(message, isError = false) {
+        if (!mpStatusLabel) {
+            return;
+        }
+        mpStatusLabel.textContent = message;
+        mpStatusLabel.classList.toggle("is-error", Boolean(isError));
+    }
+
+    function applyWorldSeed(seed, options = {}) {
+        if (!Number.isFinite(seed)) {
+            return;
+        }
+        if (!gameState.awaitingDifficulty && !options.allowDuringGame) {
+            return;
+        }
+        const normalized = ensureSeed(seed);
+        if (!options.force && gameState.worldSeed === normalized) {
+            return;
+        }
+        setRandomSeed(normalized);
+        gameState.worldSeed = normalized;
+        multiplayerState.seed = normalized;
+        if (resources) {
+            resources.initialized = false;
+            resources.onDayStart(gameState.dayNumber);
+        }
+        if (loot) {
+            loot.generateInitialChests();
+        }
+        if (structures) {
+            structures.structures = [];
+        }
+        if (enemyWaves) {
+            enemyWaves.enemies.length = 0;
+            enemyWaves.toSpawn = 0;
+            enemyWaves.active = false;
+        }
+        refreshResourceUI();
+    }
+
+    function updateDifficultySelection(key, options = {}) {
+        const preset = DIFFICULTY_PRESETS[key] ? applyDifficultySettings(key) : applyDifficultySettings(DEFAULT_DIFFICULTY);
+        if (mpDifficultySelect && mpDifficultySelect.value !== preset.key) {
+            mpDifficultySelect.value = preset.key;
+        }
+        highlightDifficultyButtons(preset.key);
+        if (options.broadcast && multiplayerState.isHost && multiplayerInstance) {
+            multiplayerInstance.emit("difficulty", { key: preset.key });
+        }
+        return preset;
+    }
+
+    function updateLobbyUI() {
+        if (!mpLobbyInfo || !mpActions) {
+            return;
+        }
+        const inLobby = Boolean(multiplayerState.lobbyId);
+        mpLobbyInfo.classList.toggle("start-hidden", !inLobby);
+        mpActions.classList.toggle("start-hidden", inLobby);
+        if (mpCopyCodeButton) {
+            mpCopyCodeButton.disabled = !inLobby;
+        }
+        if (mpNewSeedButton) {
+            mpNewSeedButton.disabled = !multiplayerState.isHost;
+        }
+        if (mpStartButton) {
+            mpStartButton.disabled = !multiplayerState.isHost || multiplayerState.members.length === 0 || multiplayerState.started;
+        }
+        if (mpLeaveButton) {
+            mpLeaveButton.disabled = !inLobby;
+        }
+        if (mpDifficultySelect) {
+            mpDifficultySelect.disabled = !multiplayerState.isHost;
+        }
+        if (!inLobby) {
+            if (mpLobbyCode) mpLobbyCode.textContent = "----";
+            if (mpLobbySeed) mpLobbySeed.textContent = "—";
+            if (mpMemberList) mpMemberList.innerHTML = "";
+            setLobbyStatus("Create a lobby or join with a code.");
+            return;
+        }
+
+        if (mpLobbyCode) {
+            mpLobbyCode.textContent = multiplayerState.lobbyId;
+        }
+        if (mpLobbySeed) {
+            mpLobbySeed.textContent = multiplayerState.seed ?? "—";
+        }
+        if (mpDifficultySelect) {
+            mpDifficultySelect.value = gameState.difficultyKey;
+        }
+        if (mpMemberList) {
+            mpMemberList.innerHTML = "";
+            for (const member of multiplayerState.members) {
+                const li = document.createElement("li");
+                const label = document.createElement("span");
+                const name = member?.name?.trim?.() || "Player";
+                label.textContent = name;
+                const badgeContainer = document.createElement("span");
+                badgeContainer.style.display = "flex";
+                badgeContainer.style.gap = "6px";
+                if (member?.id === multiplayerState.hostId) {
+                    const hostBadge = document.createElement("span");
+                    hostBadge.className = "mp-role";
+                    hostBadge.textContent = "Host";
+                    badgeContainer.append(hostBadge);
+                }
+                if (multiplayerInstance?.id && member?.id === multiplayerInstance.id) {
+                    const youBadge = document.createElement("span");
+                    youBadge.className = "mp-role";
+                    youBadge.textContent = "You";
+                    badgeContainer.append(youBadge);
+                }
+                li.append(label);
+                li.append(badgeContainer);
+                mpMemberList.append(li);
+            }
+        }
+        const waitingMsg = multiplayerState.isHost
+            ? "Share the code and start when everyone is ready."
+            : "Waiting for the host to start the game.";
+        setLobbyStatus(waitingMsg);
+    }
+
+    function startMultiplayerGame() {
+        if (!multiplayerState.lobbyId) {
+            return;
+        }
+        applyWorldSeed(multiplayerState.seed, { force: true });
+        multiplayerState.started = true;
+        beginGameWithDifficulty(gameState.difficultyKey);
+    }
+
+    if (startSingleplayerButton) {
+        startSingleplayerButton.addEventListener("click", () => {
+            pendingDifficultyIntent = "singleplayer";
+            showStartPanel("difficulty");
+            setLobbyStatus("Create a lobby or join with a code.");
+        });
+    }
+
+    if (startDifficultyButton) {
+        startDifficultyButton.addEventListener("click", () => {
+            pendingDifficultyIntent = multiplayerState.lobbyId ? "multiplayer" : "adjust";
+            showStartPanel("difficulty");
+        });
+    }
+
+    if (startMultiplayerButton) {
+        startMultiplayerButton.addEventListener("click", () => {
+            pendingDifficultyIntent = "multiplayer";
+            showStartPanel("multiplayer");
+            if (!multiplayerInstance) {
+                setLobbyStatus("Multiplayer client unavailable. Check your connection.", true);
+            }
+        });
+    }
+
+    if (startSettingsButton) {
+        startSettingsButton.addEventListener("click", () => {
+            openSettings();
+        });
+    }
+
+    startBackButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+            pendingDifficultyIntent = "singleplayer";
+            const target = button.dataset.target || "menu";
+            showStartPanel(target);
+        });
+    });
+
+    if (mpNameInput) {
+        const storedName = localStorage.getItem("dd_name");
+        if (storedName) {
+            mpNameInput.value = storedName;
+        }
+        mpNameInput.addEventListener("change", () => {
+            const value = mpNameInput.value.trim();
+            if (!value) {
+                return;
+            }
+            localStorage.setItem("dd_name", value);
+            if (multiplayerInstance?.socket) {
+                multiplayerInstance.playerName = value;
+                multiplayerInstance.socket.emit("hello", { name: value, ts: Date.now() });
+            }
+        });
+    }
+
+    if (mpJoinCodeInput) {
+        mpJoinCodeInput.addEventListener("input", () => {
+            mpJoinCodeInput.value = mpJoinCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        });
+    }
+
+    if (mpDifficultySelect) {
+        mpDifficultySelect.addEventListener("change", () => {
+            const key = mpDifficultySelect.value || DEFAULT_DIFFICULTY;
+            pendingDifficultyIntent = multiplayerState.lobbyId ? "multiplayer" : "adjust";
+            updateDifficultySelection(key, { broadcast: true });
+        });
+    }
+
+    if (mpCopyCodeButton) {
+        mpCopyCodeButton.addEventListener("click", async () => {
+            if (!multiplayerState.lobbyId) return;
+            try {
+                await navigator.clipboard.writeText(multiplayerState.lobbyId);
+                setLobbyStatus("Lobby code copied to clipboard.");
+            } catch (error) {
+                console.warn("Clipboard copy failed", error);
+                setLobbyStatus(`Code: ${multiplayerState.lobbyId}`, true);
+            }
+        });
+    }
+
+    if (mpNewSeedButton) {
+        mpNewSeedButton.addEventListener("click", () => {
+            if (!multiplayerState.isHost || !multiplayerInstance) {
+                return;
+            }
+            const nextSeed = ensureSeed(Date.now() + Math.floor(Math.random() * 0xffffffff));
+            multiplayerInstance.setLobbySeed(nextSeed);
+            multiplayerState.seed = nextSeed;
+            mpLobbySeed.textContent = nextSeed;
+            setLobbyStatus("Requested new seed.");
+        });
+    }
+
+    if (mpCreateButton) {
+        mpCreateButton.addEventListener("click", async () => {
+            if (!multiplayerInstance) {
+                setLobbyStatus("Multiplayer client unavailable.", true);
+                return;
+            }
+            const name = (mpNameInput?.value?.trim() || multiplayerInstance.playerName || "Player").slice(0, 32);
+            const seedValue = mpSeedInput?.value?.trim();
+            const seed = seedValue ? ensureSeed(seedValue) : undefined;
+            try {
+                setLobbyStatus("Creating lobby...");
+                await multiplayerInstance.createLobby({ playerName: name, seed });
+                setLobbyStatus("Lobby created. Share the code and wait for friends.");
+                if (mpNameInput) {
+                    mpNameInput.value = name;
+                    localStorage.setItem("dd_name", name);
+                }
+            } catch (error) {
+                console.error(error);
+                setLobbyStatus(`Failed to create lobby: ${error.message}`, true);
+            }
+        });
+    }
+
+    if (mpJoinForm) {
+        mpJoinForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (!multiplayerInstance) {
+                setLobbyStatus("Multiplayer client unavailable.", true);
+                return;
+            }
+            const code = mpJoinCodeInput?.value?.trim()?.toUpperCase();
+            if (!code) {
+                setLobbyStatus("Enter a lobby code to join.", true);
+                return;
+            }
+            const name = (mpNameInput?.value?.trim() || multiplayerInstance.playerName || "Player").slice(0, 32);
+            try {
+                setLobbyStatus("Joining lobby...");
+                await multiplayerInstance.joinLobby(code, { playerName: name });
+                setLobbyStatus("Joined lobby. Waiting for the host.");
+                if (mpNameInput) {
+                    localStorage.setItem("dd_name", name);
+                }
+            } catch (error) {
+                console.error(error);
+                setLobbyStatus(`Failed to join lobby: ${error.message}`, true);
+            }
+        });
+    }
+
+    if (mpLeaveButton) {
+        mpLeaveButton.addEventListener("click", () => {
+            if (!multiplayerInstance) {
+                return;
+            }
+            multiplayerInstance.leaveLobby();
+            setLobbyStatus("Left lobby.");
+        });
+    }
+
+    if (mpStartButton) {
+        mpStartButton.addEventListener("click", () => {
+            if (!multiplayerInstance || !multiplayerState.isHost) {
+                return;
+            }
+            multiplayerInstance.startLobbyGame();
+            setLobbyStatus("Starting game...");
+        });
+    }
+
+    updateLobbyUI();
 
     function updatePauseButtonState() {
         if (!pauseToggleButton) {
@@ -236,14 +680,17 @@ function formatName(word = "") {
         difficultyButtons.forEach((button) => {
             button.addEventListener("click", () => {
                 const key = button.dataset.difficulty || DEFAULT_DIFFICULTY;
-                if (gameState.awaitingDifficulty) {
+                if (pendingDifficultyIntent === "singleplayer" && gameState.awaitingDifficulty && !multiplayerState.lobbyId) {
                     beginGameWithDifficulty(key);
+                } else if (pendingDifficultyIntent === "multiplayer" && multiplayerState.lobbyId) {
+                    updateDifficultySelection(key, { broadcast: true });
+                    showStartPanel("multiplayer");
                 } else {
-                    applyDifficultySettings(key);
+                    updateDifficultySelection(key);
+                    showStartPanel("menu");
                 }
             });
         });
-        ui.showMessage("Select a difficulty to begin.", 4, "#dbe7ff");
     } else {
         gameState.paused = false;
         gameState.awaitingDifficulty = false;
