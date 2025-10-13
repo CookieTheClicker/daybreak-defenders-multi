@@ -7,6 +7,12 @@ const UPGRADE_COST_MULTIPLIER = 0.6;
 const TURRET_ROTATION_OFFSET = Math.PI / 2;
 let structureIdCounter = 1;
 
+function generateStructureId() {
+    const timestamp = Date.now().toString(36);
+    const counter = (structureIdCounter++).toString(36);
+    return `structure-${timestamp}-${counter}`;
+}
+
 function cloneCost(cost, multiplier = 1) {
     const result = {};
     for (const [key, value] of Object.entries(cost)) {
@@ -15,10 +21,11 @@ function cloneCost(cost, multiplier = 1) {
     return result;
 }
 
-function createStructureState(typeKey, position, rotation) {
+function createStructureState(typeKey, position, rotation, id) {
     const blueprint = STRUCTURE_TYPES[typeKey];
+    const assignedId = id || generateStructureId();
     const base = {
-        id: structureIdCounter++,
+        id: assignedId,
         typeKey,
         blueprint,
         position: { ...position },
@@ -49,6 +56,9 @@ export class StructureManager {
     constructor(world) {
         this.world = world;
         this.structures = [];
+        this.onStructurePlaced = null;
+        this.onStructureRemoved = null;
+        this.onStructureUpdated = null;
     }
 
     isPlacementValid(typeKey, position) {
@@ -87,6 +97,9 @@ export class StructureManager {
 
         const structure = createStructureState(typeKey, position, rotation);
         this.structures.push(structure);
+        if (typeof this.onStructurePlaced === "function") {
+            this.onStructurePlaced(structure);
+        }
         return { success: true, structure };
     }
 
@@ -121,9 +134,16 @@ export class StructureManager {
 
     damageStructure(target, amount) {
         target.hp = Math.max(0, target.hp - amount);
-        if (target.hp <= 0) {
+        const destroyed = target.hp <= 0;
+        if (destroyed) {
             this.structures = this.structures.filter((s) => s !== target);
+            if (typeof this.onStructureRemoved === "function") {
+                this.onStructureRemoved(target);
+            }
             return true;
+        }
+        if (typeof this.onStructureUpdated === "function") {
+            this.onStructureUpdated(target);
         }
         return false;
     }
@@ -218,6 +238,69 @@ export class StructureManager {
             ctx.fillStyle = "#4caf50";
             const hpRatio = structure.hp / structure.maxHp;
             ctx.fillRect(structure.position.x - camera.x - 24, structure.position.y - camera.y - structure.size / 2 - 12, 48 * hpRatio, 5);
+        }
+    }
+
+    removeStructureById(id, options = {}) {
+        if (!id) {
+            return false;
+        }
+        const index = this.structures.findIndex((structure) => structure.id === id);
+        if (index === -1) {
+            return false;
+        }
+        const [removed] = this.structures.splice(index, 1);
+        if (!options.silent && typeof this.onStructureRemoved === "function") {
+            this.onStructureRemoved(removed);
+        }
+        return true;
+    }
+
+    upsertStructureSnapshot(snapshot = {}, options = {}) {
+        if (!snapshot || typeof snapshot !== "object") {
+            return null;
+        }
+        const { id, typeKey, position, rotation = 0, level = 1, hp = null, maxHp = null, stats = null } = snapshot;
+        if (!typeKey || !position) {
+            return null;
+        }
+        const existingIndex = id ? this.structures.findIndex((structure) => structure.id === id) : -1;
+        if (existingIndex !== -1) {
+            const target = this.structures[existingIndex];
+            target.position = { ...position };
+            target.rotation = rotation;
+            target.level = level;
+            target.maxHp = Number.isFinite(maxHp) ? maxHp : target.maxHp;
+            target.hp = Number.isFinite(hp) ? hp : Math.min(target.hp, target.maxHp);
+            if (stats && target.stats) {
+                target.stats = { ...target.stats, ...stats };
+            }
+            if (!options.silent && typeof this.onStructureUpdated === "function") {
+                this.onStructureUpdated(target);
+            }
+            return target;
+        }
+        const structure = createStructureState(typeKey, position, rotation, id);
+        structure.level = level;
+        structure.maxHp = Number.isFinite(maxHp) ? maxHp : structure.maxHp;
+        structure.hp = Number.isFinite(hp) ? hp : structure.maxHp;
+        if (structure.stats && stats) {
+            structure.stats = { ...structure.stats, ...stats };
+        }
+        this.structures.push(structure);
+        if (!options.silent && typeof this.onStructurePlaced === "function") {
+            this.onStructurePlaced(structure);
+        }
+        return structure;
+    }
+
+    replaceAll(structureSnapshots = []) {
+        if (!Array.isArray(structureSnapshots)) {
+            return;
+        }
+        this.structures.length = 0;
+        for (const snapshot of structureSnapshots) {
+            this.upsertStructureSnapshot(snapshot, { silent: true });
         }
     }
 }

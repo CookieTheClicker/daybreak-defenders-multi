@@ -44,6 +44,8 @@ export class ResourceManager {
         this.lastRegrowDay = 1;
         this.resourceYieldMultiplier = modifiers.resourceYieldMultiplier ?? 1;
         this.regrowIntervalDays = 3;
+        this.onNodeUpdated = null;
+        this.onSnapshotReplaced = null;
     }
 
     onDayStart(dayNumber = 1) {
@@ -311,5 +313,75 @@ export class ResourceManager {
             }
         }
     }
-}
 
+    findNodeById(nodeId) {
+        if (!nodeId) {
+            return null;
+        }
+        return this.nodes.find((node) => node.id === nodeId) ?? null;
+    }
+
+    applyNodeUpdate(update = {}, options = {}) {
+        if (!update || typeof update !== "object") {
+            return null;
+        }
+        const node = this.findNodeById(update.nodeId || update.id);
+        if (!node) {
+            return null;
+        }
+        if (Number.isFinite(update.amount)) {
+            node.amount = Math.max(0, update.amount);
+        } else if (Number.isFinite(update.remaining)) {
+            node.amount = Math.max(0, update.remaining);
+        }
+        if (Number.isFinite(update.capacity)) {
+            node.capacity = Math.max(1, update.capacity);
+        }
+        if (update.position && Number.isFinite(update.position.x) && Number.isFinite(update.position.y)) {
+            node.position = { ...node.position, ...update.position };
+        }
+        if (typeof update.depleted === "boolean") {
+            node.depleted = update.depleted;
+        } else {
+            node.depleted = node.amount <= 0;
+        }
+        if (!options.silent && typeof this.onNodeUpdated === "function") {
+            this.onNodeUpdated({ ...node });
+        }
+        return node;
+    }
+
+    replaceNodes(snapshotList = []) {
+        if (!Array.isArray(snapshotList) || snapshotList.length === 0) {
+            return;
+        }
+        this.nodes = snapshotList.map((snapshot) => ({
+            id: snapshot.id,
+            type: snapshot.type,
+            capacity: Number.isFinite(snapshot.capacity) ? snapshot.capacity : NODE_CAPACITY[snapshot.type] || 30,
+            amount: Number.isFinite(snapshot.amount) ? snapshot.amount : snapshot.capacity,
+            reward: snapshot.reward ?? HARVEST_REWARD[snapshot.type] ?? 0,
+            depleted: Boolean((snapshot.depleted !== undefined ? snapshot.depleted : snapshot.amount <= 0)),
+            position: {
+                x: Number.isFinite(snapshot.position?.x) ? snapshot.position.x : 0,
+                y: Number.isFinite(snapshot.position?.y) ? snapshot.position.y : 0
+            }
+        }));
+        this.initialized = true;
+        if (typeof this.onSnapshotReplaced === "function") {
+            this.onSnapshotReplaced(this.nodes.map((node) => ({ ...node })));
+        }
+    }
+
+    captureSnapshot() {
+        return this.nodes.map((node) => ({
+            id: node.id,
+            type: node.type,
+            capacity: node.capacity,
+            amount: node.amount,
+            reward: node.reward,
+            depleted: node.depleted,
+            position: { ...node.position }
+        }));
+    }
+}

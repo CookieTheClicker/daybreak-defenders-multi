@@ -77,6 +77,268 @@ const init = async () => {
         resourceYieldMultiplier: difficultySettings.resourceYieldMultiplier
     });
     const structures = new StructureManager(world);
+    const NO_VERSION = "__noversion__";
+    const structureSync = {
+        version: 0,
+        lastSentVersion: 0,
+        snapshot: []
+    };
+    const resourceSync = {
+        version: 0,
+        lastSentVersion: 0,
+        snapshot: []
+    };
+    let lastAppliedStructureVersion = NO_VERSION;
+    let lastAppliedResourceVersion = NO_VERSION;
+
+    function serializeStructure(structure) {
+        if (!structure) {
+            return null;
+        }
+        const payload = {
+            id: structure.id,
+            typeKey: structure.typeKey,
+            position: {
+                x: Number.isFinite(structure.position?.x) ? structure.position.x : 0,
+                y: Number.isFinite(structure.position?.y) ? structure.position.y : 0
+            },
+            rotation: Number.isFinite(structure.rotation) ? structure.rotation : 0,
+            level: Number.isFinite(structure.level) ? structure.level : 1,
+            hp: Number.isFinite(structure.hp) ? structure.hp : structure.maxHp,
+            maxHp: Number.isFinite(structure.maxHp) ? structure.maxHp : structure.hp
+        };
+        if (structure.stats && typeof structure.stats === "object") {
+            payload.stats = { ...structure.stats };
+        }
+        return payload;
+    }
+
+    function buildStructureSnapshot() {
+        return structures.structures
+            .filter((structure) => structure && structure.typeKey)
+            .map((structure) => serializeStructure(structure))
+            .filter(Boolean);
+    }
+
+    function markStructuresDirty(options = {}) {
+        const { bumpVersion = true } = options;
+        if (bumpVersion) {
+            structureSync.version += 1;
+        }
+        structureSync.snapshot = buildStructureSnapshot();
+        if (!bumpVersion) {
+            structureSync.lastSentVersion = structureSync.version;
+        }
+    }
+
+    function buildResourceSnapshot() {
+        if (typeof resources.captureSnapshot === "function") {
+            return resources.captureSnapshot();
+        }
+        return resources.nodes.map((node) => ({
+            id: node.id,
+            type: node.type,
+            capacity: node.capacity,
+            amount: node.amount,
+            reward: node.reward,
+            depleted: node.depleted,
+            position: { ...node.position }
+        }));
+    }
+
+    function markResourcesDirty(options = {}) {
+        const { bumpVersion = true } = options;
+        if (bumpVersion) {
+            resourceSync.version += 1;
+        }
+        resourceSync.snapshot = buildResourceSnapshot();
+        if (!bumpVersion) {
+            resourceSync.lastSentVersion = resourceSync.version;
+        }
+    }
+
+    function isMultiplayerReady() {
+        return Boolean(
+            multiplayerInstance &&
+            multiplayerState.connected &&
+            multiplayerState.lobbyId
+        );
+    }
+
+    function emitMultiplayerEvent(type, payload) {
+        if (!isMultiplayerReady()) {
+            return;
+        }
+        try {
+            multiplayerInstance.emit(type, payload);
+        } catch (error) {
+            console.warn("[Multiplayer] Failed to emit event", type, error);
+        }
+    }
+
+    function broadcastStructurePlacement(structure) {
+        const payload = serializeStructure(structure);
+        if (!payload) {
+            return;
+        }
+        emitMultiplayerEvent("structure:place", payload);
+    }
+
+    function broadcastStructureRemoval(structure) {
+        if (!structure?.id) {
+            return;
+        }
+        emitMultiplayerEvent("structure:remove", { id: structure.id });
+    }
+
+    function broadcastResourceNodeUpdate(update) {
+        if (!update?.nodeId) {
+            return;
+        }
+        emitMultiplayerEvent("resource:update", {
+            nodeId: update.nodeId,
+            amount: Number.isFinite(update.remaining) ? update.remaining : update.amount,
+            capacity: Number.isFinite(update.capacity) ? update.capacity : undefined,
+            depleted: Boolean(update.depleted),
+            type: update.type || null
+        });
+    }
+
+    function serializeHeldItem(held) {
+        if (!held) {
+            return null;
+        }
+        const payload = {
+            name: held.name || null,
+            category: held.category || null,
+            slot: held.slot || null,
+            iconPath: held.iconPath || null,
+            worldAssetKey: held.worldAssetKey || null
+        };
+        if (Number.isFinite(held.attackBonus)) {
+            payload.attackBonus = held.attackBonus;
+        }
+        if (Number.isFinite(held.gatherBonus)) {
+            payload.gatherBonus = held.gatherBonus;
+        }
+        if (Number.isFinite(held.worldScale)) {
+            payload.worldScale = held.worldScale;
+        }
+        return payload;
+    }
+
+    function serializeEquipment(equipment) {
+        if (!equipment || typeof equipment !== "object") {
+            return { weapon: null, armor: null, tool: null };
+        }
+        const result = {
+            weapon: equipment.weapon ? { name: equipment.weapon.name || null, attackBonus: equipment.weapon.attackBonus ?? null } : null,
+            armor: equipment.armor ? {
+                name: equipment.armor.name || null,
+                damageReduction: equipment.armor.damageReduction ?? null,
+                overlayKey: equipment.armor.overlayKey || null,
+                overlayColor: equipment.armor.overlayColor || null
+            } : null,
+            tool: equipment.tool ? { name: equipment.tool.name || null, gatherBonus: equipment.tool.gatherBonus ?? null } : null
+        };
+        if (equipment.weapon?.iconPath) {
+            result.weapon.iconPath = equipment.weapon.iconPath;
+        }
+        if (equipment.tool?.iconPath) {
+            result.tool.iconPath = equipment.tool.iconPath;
+        }
+        return result;
+    }
+
+    function applyHostWorldSnapshots(peers) {
+        const hostId = multiplayerState.hostId;
+        if (!hostId || !peers) {
+            return;
+        }
+        const hostState = peers[hostId];
+        if (!hostState) {
+            return;
+        }
+
+        if (Array.isArray(hostState.structures)) {
+            const incomingVersion = Number.isFinite(hostState.structuresVersion)
+                ? hostState.structuresVersion
+                : NO_VERSION;
+            if (incomingVersion !== lastAppliedStructureVersion) {
+                structures.replaceAll(hostState.structures);
+                markStructuresDirty({ bumpVersion: false });
+                lastAppliedStructureVersion = incomingVersion;
+            }
+        }
+
+        if (Array.isArray(hostState.resourceNodes)) {
+            const incomingVersion = Number.isFinite(hostState.resourcesVersion)
+                ? hostState.resourcesVersion
+                : NO_VERSION;
+            if (incomingVersion !== lastAppliedResourceVersion) {
+                resources.replaceNodes(hostState.resourceNodes);
+                markResourcesDirty({ bumpVersion: false });
+                lastAppliedResourceVersion = incomingVersion;
+            }
+        }
+    }
+
+    function handleRemoteStructurePlacement(payload) {
+        if (!payload || !payload.typeKey) {
+            return;
+        }
+        structures.upsertStructureSnapshot(payload, { silent: true });
+        const shouldBroadcastLater = multiplayerState.isHost;
+        markStructuresDirty({ bumpVersion: shouldBroadcastLater });
+    }
+
+    function handleRemoteStructureRemoval(payload) {
+        if (!payload?.id) {
+            return;
+        }
+        const removed = structures.removeStructureById(payload.id, { silent: true });
+        if (!removed) {
+            return;
+        }
+        const shouldBroadcastLater = multiplayerState.isHost;
+        markStructuresDirty({ bumpVersion: shouldBroadcastLater });
+    }
+
+    function handleRemoteResourceUpdate(payload) {
+        if (!payload?.nodeId) {
+            return;
+        }
+        resources.applyNodeUpdate({
+            nodeId: payload.nodeId,
+            amount: Number.isFinite(payload.amount) ? payload.amount : undefined,
+            capacity: Number.isFinite(payload.capacity) ? payload.capacity : undefined,
+            depleted: typeof payload.depleted === "boolean" ? payload.depleted : undefined
+        }, { silent: true });
+        const shouldBroadcastLater = multiplayerState.isHost;
+        markResourcesDirty({ bumpVersion: shouldBroadcastLater });
+    }
+
+    structures.onStructurePlaced = (structure) => {
+        markStructuresDirty();
+        broadcastStructurePlacement(structure);
+    };
+
+    structures.onStructureRemoved = (structure) => {
+        markStructuresDirty();
+        broadcastStructureRemoval(structure);
+    };
+
+    structures.onStructureUpdated = () => {
+        markStructuresDirty({ bumpVersion: false });
+    };
+
+    resources.onSnapshotReplaced = () => {
+        const shouldBroadcast = multiplayerState.isHost;
+        markResourcesDirty({ bumpVersion: shouldBroadcast });
+    };
+
+    markStructuresDirty({ bumpVersion: false });
+    markResourcesDirty({ bumpVersion: false });
     const enemyWaves = new EnemyWaveManager(difficultySettings);
     const loot = new LootManager(world, {
         lootQualityModifier: difficultySettings.lootQualityModifier,
@@ -216,12 +478,14 @@ const init = async () => {
         if (resources) {
             resources.initialized = false;
             resources.onDayStart(gameState.dayNumber);
+            markResourcesDirty();
         }
         if (loot) {
             loot.generateInitialChests();
         }
         if (structures) {
             structures.structures = [];
+            markStructuresDirty();
         }
         if (enemyWaves) {
             enemyWaves.enemies.length = 0;
@@ -497,17 +761,45 @@ const init = async () => {
     window.remotePlayers = () => remotePlayers;
 
     multiplayerInstance = setupMultiplayer(
-        () => ({
-            x: player.position.x,
-            y: player.position.y,
-            dir: Number.isFinite(player.lastAimAngle) ? player.lastAimAngle : 0,
-            hp: Number.isFinite(player.health) ? player.health : 100,
-            anim: player.swingTimer > 0 ? "attack" : "idle",
-            vx: Number.isFinite(playerVelocity.x) ? playerVelocity.x : 0,
-            vy: Number.isFinite(playerVelocity.y) ? playerVelocity.y : 0
-        }),
+        () => {
+            const held = player.equipment.tool || player.equipment.weapon;
+            const snapshot = {
+                x: player.position.x,
+                y: player.position.y,
+                dir: Number.isFinite(player.lastAimAngle) ? player.lastAimAngle : 0,
+                hp: Number.isFinite(player.health) ? player.health : 100,
+                anim: player.swingTimer > 0 ? "attack" : "idle",
+                vx: Number.isFinite(playerVelocity.x) ? playerVelocity.x : 0,
+                vy: Number.isFinite(playerVelocity.y) ? playerVelocity.y : 0,
+                currentBuildSelection: gameState.currentBuildSelection,
+                selectedInventoryIndex: gameState.selectedInventoryIndex,
+                heldItem: serializeHeldItem(held),
+                equipment: serializeEquipment(player.equipment),
+                structureKits: inventory.getStructureKitCounts
+                    ? inventory.getStructureKitCounts(CRAFTABLE_STRUCTURES)
+                    : {},
+                inventoryResources: inventory.getResources(),
+                phase: gameState.phase,
+                inHouse: Boolean(gameState.inHouse)
+            };
+
+            if (structureSync.version !== structureSync.lastSentVersion) {
+                snapshot.structuresVersion = structureSync.version;
+                snapshot.structures = structureSync.snapshot;
+                structureSync.lastSentVersion = structureSync.version;
+            }
+
+            if (resourceSync.version !== resourceSync.lastSentVersion) {
+                snapshot.resourcesVersion = resourceSync.version;
+                snapshot.resourceNodes = resourceSync.snapshot;
+                resourceSync.lastSentVersion = resourceSync.version;
+            }
+
+            return snapshot;
+        },
         (peers) => {
             remotePlayers = peers ?? {};
+            applyHostWorldSnapshots(peers);
         }
     );
 
@@ -519,9 +811,11 @@ const init = async () => {
 
         multiplayerInstance.onPeers((peers) => {
             remotePlayers = peers ?? {};
+            applyHostWorldSnapshots(peers);
         });
 
         multiplayerInstance.onLobbyUpdate((snapshot) => {
+            const previousHostId = multiplayerState.hostId;
             multiplayerState.lobbyId = snapshot?.lobbyId || null;
             multiplayerState.hostId = snapshot?.hostId || null;
             multiplayerState.isHost = Boolean(snapshot?.hostId && multiplayerInstance.id === snapshot.hostId);
@@ -530,6 +824,10 @@ const init = async () => {
             }
             multiplayerState.members = Array.isArray(snapshot?.members) ? snapshot.members : [];
             multiplayerState.started = Boolean(snapshot?.started);
+            if (previousHostId !== multiplayerState.hostId) {
+                lastAppliedStructureVersion = NO_VERSION;
+                lastAppliedResourceVersion = NO_VERSION;
+            }
             if (!multiplayerState.started && multiplayerState.seed != null) {
                 applyWorldSeed(multiplayerState.seed, { force: true });
             }
@@ -555,6 +853,8 @@ const init = async () => {
             multiplayerState.started = false;
             multiplayerState.seed = defaultSeed;
             remotePlayers = {};
+            lastAppliedStructureVersion = NO_VERSION;
+            lastAppliedResourceVersion = NO_VERSION;
             updateLobbyUI();
             showStartPanel("menu");
         });
@@ -570,6 +870,18 @@ const init = async () => {
         multiplayerInstance.onLobbyError((error) => {
             if (!error) return;
             setLobbyStatus(error.error ? `Lobby error: ${error.error}` : "Lobby error.", true);
+        });
+
+        multiplayerInstance.onEvent("structure:place", ({ payload }) => {
+            handleRemoteStructurePlacement(payload);
+        });
+
+        multiplayerInstance.onEvent("structure:remove", ({ payload }) => {
+            handleRemoteStructureRemoval(payload);
+        });
+
+        multiplayerInstance.onEvent("resource:update", ({ payload }) => {
+            handleRemoteResourceUpdate(payload);
         });
 
         multiplayerInstance.onEvent("difficulty", ({ payload }) => {
@@ -668,6 +980,7 @@ const init = async () => {
     };
 
     resources.onDayStart(gameState.dayNumber);
+    markResourcesDirty();
     loot.onDayStart(gameState.dayNumber);
     const initialResources = inventory.getResources();
     ui.updatePhase(gameState.dayNumber, gameState.phase, gameState.phaseTimer);
@@ -1662,6 +1975,7 @@ function handleInventoryReorder(details) {
         }
 
         resources.onDayStart(gameState.dayNumber);
+        markResourcesDirty();
         loot.onDayStart(gameState.dayNumber);
         const dayMessageBase = `Day ${gameState.dayNumber}: Gather, build, prepare.`;
         const dayMessage = expandedThisMorning
@@ -2056,6 +2370,10 @@ function handleInput(deltaSeconds) {
 
         const gathered = resources.attemptGather(player);
         if (gathered) {
+            if (!gathered.failureReason) {
+                markResourcesDirty();
+                broadcastResourceNodeUpdate(gathered);
+            }
             if (gathered.rewarded) {
                 const amountLabel = `${gathered.rewardAmount} ${formatName(gathered.type)}`;
                 let message = `+${amountLabel}`;
@@ -2569,13 +2887,57 @@ function updateGame(deltaSeconds) {
                 }
                 const drawX = (Number.isFinite(p.x) ? p.x : player.position.x) - gameState.camera.x;
                 const drawY = (Number.isFinite(p.y) ? p.y : player.position.y) - gameState.camera.y;
+                const direction = Number.isFinite(p.dir) ? p.dir : 0;
+
                 ctx.save();
-                ctx.globalAlpha = 0.7;
+                ctx.translate(drawX, drawY);
+                ctx.globalAlpha = 0.82;
                 ctx.fillStyle = "#7be0a6";
                 ctx.beginPath();
-                ctx.arc(drawX, drawY, 10, 0, Math.PI * 2);
+                ctx.arc(0, 0, 10, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.strokeStyle = "rgba(123, 224, 166, 0.85)";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, 0);
+                ctx.lineTo(Math.cos(direction) * 18, Math.sin(direction) * 18);
+                ctx.stroke();
                 ctx.restore();
+
+                const labelLines = [];
+                if (p.name) {
+                    labelLines.push(String(p.name));
+                }
+                if (p.heldItem?.name) {
+                    labelLines.push(p.heldItem.name);
+                } else if (p.equipment?.weapon?.name) {
+                    labelLines.push(p.equipment.weapon.name);
+                }
+                if (p.currentBuildSelection) {
+                    labelLines.push(`Kit: ${formatName(p.currentBuildSelection)}`);
+                }
+
+                if (labelLines.length) {
+                    ctx.save();
+                    ctx.font = "13px Segoe UI";
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "bottom";
+                    const totalHeight = labelLines.length * 15 + 6;
+                    const boxTop = drawY - 20 - totalHeight;
+                    ctx.fillStyle = "rgba(12, 18, 26, 0.55)";
+                    ctx.fillRect(drawX - 70, boxTop, 140, totalHeight + 4);
+                    ctx.strokeStyle = "rgba(123, 224, 166, 0.35)";
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(drawX - 70, boxTop, 140, totalHeight + 4);
+
+                    let lineOffset = boxTop + totalHeight + 1;
+                    labelLines.forEach((line, index) => {
+                        ctx.fillStyle = index === 0 ? "#e9efff" : "#cbe8dd";
+                        ctx.fillText(line, drawX, lineOffset);
+                        lineOffset -= 15;
+                    });
+                    ctx.restore();
+                }
             }
             effects.draw(ctx, gameState.camera);
 
