@@ -210,17 +210,31 @@ export class UIManager {
                 return false;
             }
             setDragHover(slot);
-            if (typeof this.onInventoryReorder === "function") {
-                this.onInventoryReorder({
-                    fromIndex,
-                    toIndex: Number.isFinite(toIndex) && toIndex >= 0 ? toIndex : null,
-                    source: this.dragState.source || "grid",
-                    target: slot.dataset.source || "grid",
-                    slotType,
-                    fromSlotType: this.dragState.slotType || null,
-                    fromEquippedIndex: Number.isFinite(this.dragState.equippedIndex) ? this.dragState.equippedIndex : null,
-                    event
-                });
+            const details = {
+                fromIndex,
+                toIndex: Number.isFinite(toIndex) && toIndex >= 0 ? toIndex : null,
+                source: this.dragState.source || "grid",
+                target: slot.dataset.source || "grid",
+                slotType,
+                fromSlotType: this.dragState.slotType || null,
+                fromEquippedIndex: Number.isFinite(this.dragState.equippedIndex) ? this.dragState.equippedIndex : null,
+                event
+            };
+            console.debug('[UI] completeDrag details', details);
+            const targetSource = slot.dataset.source || "grid";
+            // If chest is involved, prefer the chest-specific handler
+            if ((targetSource === 'chest' || this.dragState.source === 'chest') && typeof this.onChestReorder === 'function') {
+                try {
+                    this.onChestReorder(details);
+                } catch (err) {
+                    console.error('[UI] onChestReorder handler error', err);
+                }
+            } else if (typeof this.onInventoryReorder === "function") {
+                try {
+                    this.onInventoryReorder(details);
+                } catch (err) {
+                    console.error('[UI] onInventoryReorder handler error', err);
+                }
             }
             this.dragState.completed = true;
             this.suppressInventoryClick = true;

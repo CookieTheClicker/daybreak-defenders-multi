@@ -979,7 +979,8 @@ const init = async () => {
                 enemiesActive: !!enemyWaves.active,
                 toSpawn: enemyWaves.toSpawn || 0,
                 chests: loot && Array.isArray(loot.chests) ? loot.chests.map((c) => ({ id: c.id, opened: !!c.opened })) : [],
-                communityChest: communityChest.getItems ? communityChest.getItems() : (communityChest.items ? communityChest.items.map(i => i ? { ...i } : null) : null)
+                communityChest: communityChest.getItems ? communityChest.getItems() : (communityChest.items ? communityChest.items.map(i => i ? { ...i } : null) : null),
+                communityChestMeta: houseInterior.chest ? { id: houseInterior.chest.id, position: { ...houseInterior.chest.position }, radius: houseInterior.chest.radius } : null
             };
         }
 
@@ -1035,6 +1036,23 @@ const init = async () => {
                 // Replace local chest contents with host snapshot
                 const snapshot = fakeHostState.communityChest;
                 communityChest.items = snapshot.map((it) => it ? { ...(it || {}) } : null);
+            }
+            if (fakeHostState.communityChestMeta && typeof fakeHostState.communityChestMeta === 'object') {
+                try {
+                    const meta = fakeHostState.communityChestMeta;
+                    if (!houseInterior.chest) houseInterior.chest = {};
+                    if (meta.position && typeof meta.position === 'object') {
+                        houseInterior.chest.position = { ...(meta.position || {}) };
+                    }
+                    if (Number.isFinite(meta.radius)) {
+                        houseInterior.chest.radius = meta.radius;
+                    }
+                    if (meta.id) {
+                        houseInterior.chest.id = meta.id;
+                    }
+                } catch (err) {
+                    // ignore malformed meta
+                }
             }
         });
 
@@ -1139,6 +1157,13 @@ const init = async () => {
             width: 120,
             height: 72,
             radius: 72
+        }
+        ,
+        // Community chest entity inside the house (visual + interaction point)
+        chest: {
+            id: "community_chest_1",
+            position: { x: 150, y: 176 },
+            radius: 46
         }
     };
     const doorReachY = Math.max(
@@ -1697,7 +1722,16 @@ function handleChestReorder(details) {
     // Allow rearranging inside the chest or moving from inventory to chest via drag/drop
     if (!details) return;
     const { fromIndex, toIndex, source, target } = details;
-    if (source === 'grid' && target === 'chest') {
+    const src = source || '';
+    const tgt = target || '';
+    // Debug: log chest reorder attempts so we can trace drag/drop failures
+    try {
+        console.debug('[Main] handleChestReorder called', { fromIndex, toIndex, source, target, details });
+    } catch (err) {
+        // ignore
+    }
+    // Treat any non-chest source as player's inventory (grid, bar, etc.)
+    if (src !== 'chest' && tgt === 'chest') {
         // move from player inventory to chest
         const item = inventory.getItemAt(fromIndex);
         if (!item) return;
@@ -1715,7 +1749,8 @@ function handleChestReorder(details) {
         refreshResourceUI();
         return;
     }
-    if (source === 'chest' && target === 'grid') {
+    // Chest -> any non-chest target (grid, bar, etc.)
+    if (src === 'chest' && tgt !== 'chest') {
         // move from chest to player inventory
         const chestItems = communityChest.items || [];
         if (!Number.isFinite(fromIndex) || fromIndex < 0) return;
@@ -2627,14 +2662,13 @@ function handleInput(deltaSeconds) {
             input.interact = false;
             return;
         }
-        // If inside house, check for chest interaction at table position
-        if (gameState.inHouse) {
-            const table = houseInterior.craftingTable;
-            const dx = interiorState.position.x - table.position.x;
-            const dy = interiorState.position.y - table.position.y;
+        // If inside house, check for chest interaction at chest position
+        if (gameState.inHouse && houseInterior.chest && houseInterior.chest.position) {
+            const chestPos = houseInterior.chest.position;
+            const dx = interiorState.position.x - chestPos.x;
+            const dy = interiorState.position.y - chestPos.y;
             const dist = Math.hypot(dx, dy);
-            if (dist <= table.radius) {
-                // Open community chest UI
+            if (dist <= (houseInterior.chest.radius || 48)) {
                 openCommunityChest();
                 input.interact = false;
                 return;
@@ -3137,14 +3171,35 @@ function updateGame(deltaSeconds) {
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText("Press E to craft", tableX + table.width / 2, tableY - 32);
-        } else if (gameState.inHouse && Math.hypot(interiorState.position.x - table.position.x, interiorState.position.y - table.position.y) <= table.radius) {
-            ctx.fillStyle = "rgba(12, 18, 26, 0.6)";
-            ctx.fillRect(tableX - 24, tableY - 48, table.width + 48, 32);
-            ctx.fillStyle = "#e9efff";
-            ctx.font = "17px Segoe UI";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText("Press E to open community chest", tableX + table.width / 2, tableY - 32);
+        }
+        // Draw the community chest in the interior
+        const chest = houseInterior.chest;
+        if (chest && chest.position) {
+            const chestX = offsetX + chest.position.x;
+            const chestY = offsetY + chest.position.y;
+            const chestAsset = getAsset("chest");
+            ctx.save();
+            if (chestAsset?.loaded) {
+                const w = 72;
+                const h = Math.max(36, w * (chestAsset.image.height ? chestAsset.image.height / chestAsset.image.width : 0.5));
+                ctx.drawImage(chestAsset.image, chestX - w / 2, chestY - h / 2, w, h);
+            } else {
+                ctx.fillStyle = "#6b3f1f";
+                ctx.fillRect(chestX - 28, chestY - 16, 56, 32);
+                ctx.fillStyle = "#4b2f12";
+                ctx.fillRect(chestX - 24, chestY - 10, 48, 20);
+            }
+            // Show prompt when player stands near chest
+            if (gameState.inHouse && Math.hypot(interiorState.position.x - chest.position.x, interiorState.position.y - chest.position.y) <= chest.radius) {
+                ctx.fillStyle = "rgba(12, 18, 26, 0.6)";
+                ctx.fillRect(chestX - 84, chestY - 64, 168, 28);
+                ctx.fillStyle = "#e9efff";
+                ctx.font = "17px Segoe UI";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("Press E to open community chest", chestX, chestY - 48);
+            }
+            ctx.restore();
         }
         ctx.restore();
 
