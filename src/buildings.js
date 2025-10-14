@@ -149,13 +149,35 @@ export class StructureManager {
     }
 
     update(deltaSeconds, enemies, effectManager) {
+        const applyDamageToEnemy = (enemy, amount) => {
+            if (!enemy) return false;
+            // If enemy is a proper class instance with takeDamage(), use it.
+            if (typeof enemy.takeDamage === "function") {
+                try {
+                    return enemy.takeDamage(amount);
+                } catch (err) {
+                    // fall through to manual apply
+                }
+            }
+            // Manual fallback for snapshot/plain enemy objects
+            if (!Number.isFinite(enemy.health)) {
+                enemy.health = Number.isFinite(enemy.maxHealth) ? enemy.maxHealth : 0;
+            }
+            enemy.health = Math.max(0, enemy.health - amount);
+            if (enemy.health <= 0) {
+                enemy.alive = false;
+                return true;
+            }
+            return false;
+        };
+
         for (const structure of this.structures) {
             if (structure.typeKey === "spike") {
                 for (const enemy of enemies) {
                     if (!enemy.alive) continue;
                     const dist = distance(structure.position, enemy.position);
                     if (dist <= (structure.size / 2) + enemy.radius) {
-                        enemy.takeDamage(structure.stats.dps * deltaSeconds);
+                        applyDamageToEnemy(enemy, structure.stats.dps * deltaSeconds);
                     }
                 }
             }
@@ -175,7 +197,7 @@ export class StructureManager {
                     if (target) {
                         const targetPosition = { ...target.position };
                         const aimAngle = Math.atan2(targetPosition.y - structure.position.y, targetPosition.x - structure.position.x);
-                        const killed = target.takeDamage(structure.stats.damage);
+                        const killed = applyDamageToEnemy(target, structure.stats.damage);
                         structure.fireCooldown = 1 / structure.stats.fireRate;
                         structure.rotation = aimAngle;
                         if (effectManager) {

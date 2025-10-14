@@ -479,7 +479,13 @@ const init = async () => {
             if (!panel) return;
             const hidden = candidate !== key;
             panel.classList.toggle("start-hidden", hidden);
-            panel.setAttribute("aria-hidden", hidden ? "true" : "false");
+            if (hidden) {
+                panel.setAttribute("aria-hidden", "true");
+                panel.setAttribute("inert", "");
+            } else {
+                panel.setAttribute("aria-hidden", "false");
+                panel.removeAttribute("inert");
+            }
         });
     }
 
@@ -2733,8 +2739,11 @@ function updateGame(deltaSeconds) {
             startNightPhase();
         }
 
-        // Only the host should run enemy spawning and authoritative updates.
-        const waveEvents = (multiplayerState.isHost || !multiplayerInstance)
+        // Determine who should run enemy spawning / authoritative updates:
+        // - Singleplayer (no lobby) should run enemies locally.
+        // - In multiplayer, only the host should run enemies.
+        const authoritativeForEnemies = (!multiplayerInstance) || (!multiplayerState.lobbyId) || multiplayerState.isHost;
+        const waveEvents = authoritativeForEnemies
             ? enemyWaves.update(deltaSeconds, world, structures, inventory, effects, player, gameState.phase === "night")
             : { playerHits: [] };
         structures.update(deltaSeconds, enemyWaves.enemies, effects);
