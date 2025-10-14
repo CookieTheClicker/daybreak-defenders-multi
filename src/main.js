@@ -482,6 +482,17 @@ const init = async () => {
 
     function showStartPanel(panelKey = "menu") {
         const key = startPanels[panelKey] ? panelKey : "menu";
+        // If an element inside the start overlay has focus and we're about to hide it,
+        // blur it first so aria-hidden isn't applied to a focused element.
+        try {
+            const active = document.activeElement;
+            if (active && startOverlay && startOverlay.contains(active)) {
+                active.blur();
+            }
+        } catch (err) {
+            // ignore
+        }
+
         Object.entries(startPanels).forEach(([candidate, panel]) => {
             if (!panel) return;
             const hidden = candidate !== key;

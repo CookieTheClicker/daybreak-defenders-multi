@@ -91,6 +91,9 @@ export async function loadAssets(keys = Object.keys(PROP_REGISTRY)) {
             const path = PROP_REGISTRY[key];
             const result = await loadImage(path);
             const record = { key, path, ...result };
+            if (!result.loaded) {
+                console.warn(`[assets] Failed to load asset '${key}' from ${path}`);
+            }
             assetCache.set(key, record);
             return record;
         })

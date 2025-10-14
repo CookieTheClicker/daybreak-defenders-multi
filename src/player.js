@@ -143,10 +143,30 @@ export class Player {
         const hits = [];
         const damage = this.getAttackDamage();
         for (const enemy of enemies) {
-            if (!enemy.alive) continue;
+            if (!enemy || !enemy.alive) continue;
             if (distance(this.position, enemy.position) <= range) {
-                const killed = enemy.takeDamage(damage);
-                hits.push({ enemy, killed, damage });
+                let killed = false;
+                let applied = damage;
+                try {
+                    if (typeof enemy.takeDamage === 'function') {
+                        killed = enemy.takeDamage(damage);
+                        applied = damage;
+                    } else if (typeof enemy.health === 'number') {
+                        const prev = enemy.health;
+                        enemy.health = Math.max(0, enemy.health - damage);
+                        applied = prev - enemy.health;
+                        if (enemy.health <= 0) {
+                            enemy.alive = false;
+                            killed = true;
+                        }
+                    } else {
+                        // unknown enemy shape - mark as hit but do not attempt damage
+                        applied = 0;
+                    }
+                } catch (err) {
+                    console.error('Error applying damage to enemy', err);
+                }
+                hits.push({ enemy, killed, damage: applied });
             }
         }
         if (hits.length > 0) {
