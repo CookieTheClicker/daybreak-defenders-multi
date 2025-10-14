@@ -364,7 +364,8 @@ function rollChestType(modifiers) {
         return { ...type, effective: (type.weight ?? 1) * boost };
     });
     const total = adjusted.reduce((sum, type) => sum + type.effective, 0);
-    let pick = random() * total;
+    // Use Math.random here so chest type varies between clients even with same seed
+    let pick = Math.random() * total;
     for (const type of adjusted) {
         if (pick <= type.effective) {
             return type;
@@ -376,15 +377,16 @@ function rollChestType(modifiers) {
 
 function rollChestLoot(chestType, modifiers) {
     const [minRolls, maxRolls] = chestType.rolls;
-    const rolls = Math.max(minRolls, Math.ceil(minRolls + random() * (maxRolls - minRolls)));
+    // Use Math.random here so chest contents are not identical across clients
+    const rolls = Math.max(minRolls, Math.ceil(minRolls + Math.random() * (maxRolls - minRolls)));
     const loot = [];
     for (let i = 0; i < rolls; i++) {
-        const categoryRoll = random();
+        const categoryRoll = Math.random();
         let entry = null;
         if (categoryRoll < 0.45) {
             entry = rollResource(modifiers);
         } else if (categoryRoll < 0.85) {
-            const equipmentRoll = random();
+            const equipmentRoll = Math.random();
             if (equipmentRoll < 0.33) {
                 entry = rollWeapon(modifiers);
             } else if (equipmentRoll < 0.66) {

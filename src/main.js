@@ -281,6 +281,31 @@ const init = async () => {
                 lastAppliedResourceVersion = incomingVersion;
             }
         }
+
+        // Apply world timing and house state from host so clients stay in sync
+        if (hostState.phase && typeof hostState.phase === "string") {
+            if (gameState.phase !== hostState.phase) {
+                gameState.phase = hostState.phase;
+            }
+        }
+        if (Number.isFinite(hostState.dayNumber)) {
+            gameState.dayNumber = hostState.dayNumber;
+        }
+        if (Number.isFinite(hostState.phaseTimer)) {
+            gameState.phaseTimer = hostState.phaseTimer;
+        }
+        if (Number.isFinite(hostState.houseHp)) {
+            if (world && typeof world.house === "object") {
+                world.house.hp = hostState.houseHp;
+            }
+        }
+
+        // If host provides enemy list snapshot, replace local enemies to match host.
+        if (Array.isArray(hostState.enemies)) {
+            // Shallow-copy host-provided enemy snapshots. This keeps client rendering and logic
+            // aligned with the host while avoiding remote construction complexities.
+            enemyWaves.enemies = hostState.enemies.map((e) => ({ ...(e || {}) }));
+        }
     }
 
     function handleRemoteStructurePlacement(payload) {
@@ -780,6 +805,9 @@ const init = async () => {
                     : {},
                 inventoryResources: inventory.getResources(),
                 phase: gameState.phase,
+                dayNumber: gameState.dayNumber,
+                phaseTimer: Number.isFinite(gameState.phaseTimer) ? gameState.phaseTimer : 0,
+                houseHp: world?.house?.hp,
                 inHouse: Boolean(gameState.inHouse)
             };
 
@@ -889,6 +917,108 @@ const init = async () => {
             if (key && DIFFICULTY_PRESETS[key]) {
                 pendingDifficultyIntent = "multiplayer";
                 updateDifficultySelection(key);
+            }
+        });
+
+        // Host: periodically broadcast authoritative world snapshot so clients stay synced.
+        let _worldSnapshotInterval = null;
+        function buildWorldSnapshot() {
+            return {
+                phase: gameState.phase,
+                dayNumber: gameState.dayNumber,
+                phaseTimer: Number.isFinite(gameState.phaseTimer) ? gameState.phaseTimer : 0,
+                houseHp: world?.house?.hp ?? null,
+                structuresVersion: structureSync.version,
+                structures: structureSync.snapshot,
+                resourcesVersion: resourceSync.version,
+                resourceNodes: resourceSync.snapshot,
+                enemies: enemyWaves.enemies.map((e) => ({
+                    position: e.position,
+                    radius: e.radius,
+                    health: e.health,
+                    maxHealth: e.maxHealth,
+                    speed: e.speed,
+                    damage: e.damage,
+                    alive: e.alive,
+                    attackCooldown: e.attackCooldown,
+                    waveNumber: e.waveNumber,
+                    hitFlash: e.hitFlash
+                })),
+                chests: loot && Array.isArray(loot.chests) ? loot.chests.map((c) => ({ id: c.id, opened: !!c.opened })) : []
+            };
+        }
+
+        multiplayerInstance.onEvent("world:snapshot", ({ payload, from }) => {
+            // Only apply if not host
+            if (multiplayerState.isHost) return;
+            if (!payload) return;
+            // Merge snapshot into peers-based apply path to keep things consistent
+            const fakeHostState = { ...payload };
+            // Apply structure/resource versions directly if present
+            if (Array.isArray(fakeHostState.structures)) {
+                const incomingVersion = Number.isFinite(fakeHostState.structuresVersion) ? fakeHostState.structuresVersion : NO_VERSION;
+                if (incomingVersion !== lastAppliedStructureVersion) {
+                    structures.replaceAll(fakeHostState.structures);
+                    markStructuresDirty({ bumpVersion: false });
+                    lastAppliedStructureVersion = incomingVersion;
+                }
+            }
+            if (Array.isArray(fakeHostState.resourceNodes)) {
+                const incomingVersion = Number.isFinite(fakeHostState.resourcesVersion) ? fakeHostState.resourcesVersion : NO_VERSION;
+                if (incomingVersion !== lastAppliedResourceVersion) {
+                    resources.replaceNodes(fakeHostState.resourceNodes);
+                    markResourcesDirty({ bumpVersion: false });
+                    lastAppliedResourceVersion = incomingVersion;
+                }
+            }
+            // Apply timing/house/enemies/chests
+            if (fakeHostState.phase) gameState.phase = fakeHostState.phase;
+            if (Number.isFinite(fakeHostState.dayNumber)) gameState.dayNumber = fakeHostState.dayNumber;
+            if (Number.isFinite(fakeHostState.phaseTimer)) gameState.phaseTimer = fakeHostState.phaseTimer;
+            if (Number.isFinite(fakeHostState.houseHp) && world && typeof world.house === "object") world.house.hp = fakeHostState.houseHp;
+            if (Array.isArray(fakeHostState.enemies)) {
+                enemyWaves.enemies = fakeHostState.enemies.map((e) => ({ ...(e || {}) }));
+            }
+            if (Array.isArray(fakeHostState.chests) && loot) {
+                // Apply opened state for known chests; do not override positions so clients keep their own chest placements
+                for (const chestState of fakeHostState.chests) {
+                    const local = loot.chests.find((c) => c.id === chestState.id);
+                    if (local && typeof chestState.opened === "boolean") {
+                        local.opened = chestState.opened;
+                    }
+                }
+            }
+        });
+
+        // Start/stop snapshot broadcast when lobby state changes
+        const startWorldBroadcast = () => {
+            if (_worldSnapshotInterval) return;
+            _worldSnapshotInterval = setInterval(() => {
+                if (multiplayerState.isHost && multiplayerInstance) {
+                    try {
+                        multiplayerInstance.emit("world:snapshot", buildWorldSnapshot());
+                    } catch (err) {
+                        // ignore
+                    }
+                }
+            }, 1000);
+        };
+        const stopWorldBroadcast = () => {
+            if (_worldSnapshotInterval) {
+                clearInterval(_worldSnapshotInterval);
+                _worldSnapshotInterval = null;
+            }
+        };
+
+        // Start broadcasting if already host
+        if (multiplayerState.isHost) startWorldBroadcast();
+
+        // Watch for lobby changes to start/stop
+        multiplayerInstance.onLobbyUpdate((snapshot) => {
+            if (snapshot?.hostId && multiplayerInstance.id === snapshot.hostId) {
+                startWorldBroadcast();
+            } else {
+                stopWorldBroadcast();
             }
         });
     } else {
@@ -2317,6 +2447,26 @@ function handleInput(deltaSeconds) {
     lastPlayerPosition.y = player.position.y;
 
     if (input.interact) {
+        // If there's a nearby structure, prefer upgrading it when interacting (helps mobile users)
+        const nearbyStructureForUpgrade = structures.findStructureNear(player.position);
+        if (nearbyStructureForUpgrade) {
+            const result = structures.attemptUpgrade(nearbyStructureForUpgrade, inventory);
+            if (result.success) {
+                ui.showMessage(`${nearbyStructureForUpgrade.typeKey} upgraded to Lv.${nearbyStructureForUpgrade.level}`, 2, "#84b6ff");
+                refreshResourceUI();
+                effects.spawnPulse({
+                    position: { ...nearbyStructureForUpgrade.position },
+                    startRadius: 16,
+                    endRadius: 64,
+                    color: "rgba(132, 182, 255, 0.4)"
+                });
+            } else if (result.reason) {
+                ui.showMessage(result.reason, 2, "#ff8888");
+            }
+            input.interact = false;
+            return;
+        }
+
         if (world.isNearHouseDoor(player.position, world.house.door.radius * 0.85)) {
             enterHouse();
             input.interact = false;
