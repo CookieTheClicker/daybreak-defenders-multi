@@ -50,14 +50,10 @@ export class UIManager {
             playerVital: document.getElementById("player-vital"),
             houseVital: document.getElementById("house-vital")
         };
-        this.elements.chestGrid = document.getElementById('chest-grid');
-        this.elements.chestPanel = document.getElementById('chest-panel');
 
         this.onCraftRequest = null;
         this.onInventoryItemUse = null;
         this.onInventoryReorder = null;
-    this.onChestReorder = null;
-    this.onChestItemUse = null;
         this.suppressInventoryClick = false;
         this.dragState = {
             activeIndex: null,
@@ -190,9 +186,6 @@ export class UIManager {
             if (!slot && this.elements.inventoryBar) {
                 slot = findSlotFromPoint(this.elements.inventoryBar, clientX, clientY);
             }
-            if (!slot && this.elements.chestGrid) {
-                slot = findSlotFromPoint(this.elements.chestGrid, clientX, clientY);
-            }
             if (!slot && this.elements.inventoryArmorSlot) {
                 slot = findSlotFromPoint(this.elements.inventoryArmorSlot, clientX, clientY);
             }
@@ -221,15 +214,7 @@ export class UIManager {
                 event
             };
             console.debug('[UI] completeDrag details', details);
-            const targetSource = slot.dataset.source || "grid";
-            // If chest is involved, prefer the chest-specific handler
-            if ((targetSource === 'chest' || this.dragState.source === 'chest') && typeof this.onChestReorder === 'function') {
-                try {
-                    this.onChestReorder(details);
-                } catch (err) {
-                    console.error('[UI] onChestReorder handler error', err);
-                }
-            } else if (typeof this.onInventoryReorder === "function") {
+            if (typeof this.onInventoryReorder === "function") {
                 try {
                     this.onInventoryReorder(details);
                 } catch (err) {
@@ -347,18 +332,6 @@ export class UIManager {
             this.elements.inventoryGrid.addEventListener("click", inventoryClickHandler);
             this.elements.inventoryGrid.addEventListener("pointerdown", handlePointerDown);
         }
-        if (this.elements.chestGrid) {
-            this.elements.chestGrid.addEventListener("click", (event) => {
-                const slot = event.target instanceof Element ? event.target.closest('.inventory-slot[data-item-index]') : null;
-                if (!slot) return;
-                const index = Number.parseInt(slot.dataset.itemIndex ?? '', 10);
-                if (!Number.isFinite(index) || index < 0) return;
-                if (typeof this.onChestItemUse === 'function') {
-                    this.onChestItemUse({ index, event });
-                }
-            });
-            this.elements.chestGrid.addEventListener("pointerdown", handlePointerDown);
-        }
         if (this.elements.inventoryBar) {
             this.elements.inventoryBar.addEventListener("click", inventoryClickHandler);
             this.elements.inventoryBar.addEventListener("pointerdown", handlePointerDown);
@@ -394,14 +367,6 @@ export class UIManager {
             });
         }
 
-    }
-
-    bindChestItemHandler(handler) {
-        this.onChestItemUse = typeof handler === 'function' ? handler : null;
-    }
-
-    bindChestReorderHandler(handler) {
-        this.onChestReorder = typeof handler === 'function' ? handler : null;
     }
 
     updateResources(resources = {}) {
@@ -595,17 +560,6 @@ export class UIManager {
             });
         };
 
-        const renderChestSlot = (slotIndex) => {
-            const item = this.cachedChestItems && slotIndex < this.cachedChestItems.length ? this.cachedChestItems[slotIndex] : null;
-            const classes = ['inventory-slot'];
-            const slotIndexAttr = Number.isInteger(slotIndex) ? slotIndex : -1;
-            const attrParts = [`data-slot-index="${escapeAttr(String(slotIndexAttr))}"`, `data-source="chest"`, `data-item-index="${escapeAttr(String(slotIndexAttr))}"`];
-            const html = item
-                ? `<div class="inventory-item"><img src="${escapeAttr(item.iconPath || '')}" alt=""><div class="inventory-count">${item.count ?? ''}</div></div>`
-                : `<div class="inventory-empty"></div>`;
-            return `<div class="${classes.join(' ')}" ${attrParts.join(' ')} title="${escapeAttr(item ? item.name || '' : '')}">${html}</div>`;
-        };
-
         const totalSlotsRaw = Number.isFinite(capacity) && capacity > 0 ? capacity : list.length;
         const slotTotal = Math.max(totalSlotsRaw || 0, columns);
         const rows = Math.max(1, Math.ceil(slotTotal / columns));
@@ -618,27 +572,6 @@ export class UIManager {
                     if (slotIndex >= slotTotal) {
                         continue;
                     }
-        // render chest if present
-        if (this.elements.chestGrid) {
-            const chestCap = this.cachedChestItems ? this.cachedChestItems.length : 0;
-            const chestCols = Math.max(1, Math.min(8, columns));
-            const chestRows = Math.ceil(chestCap / chestCols) || 1;
-            const chestGrid = [];
-            for (let r = 0; r < chestRows; r++) {
-                const row = [];
-                for (let c = 0; c < chestCols; c++) {
-                    const idx = r * chestCols + c;
-                    row.push(renderChestSlot(idx));
-                }
-                chestGrid.push(`<div class="inventory-row">${row.join('')}</div>`);
-            }
-            this.elements.chestGrid.innerHTML = chestGrid.join('');
-            const chestPanel = document.getElementById('chest-panel');
-            if (chestPanel) {
-                chestPanel.setAttribute('aria-hidden', this.cachedChestItems ? 'false' : 'true');
-                chestPanel.classList.toggle('active', Boolean(this.cachedChestItems));
-            }
-        }
                     gridMarkup.push(renderSlot(slotIndex, "grid"));
                 }
             }
