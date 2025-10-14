@@ -377,11 +377,6 @@ const init = async () => {
         lootQualityModifier: difficultySettings.lootQualityModifier,
         resourceYield: difficultySettings.resourceYieldMultiplier
     });
-    // Community chest shared in the house
-    const communityChest = new Inventory();
-    // Give chest a larger capacity specifically for shared storage
-    communityChest.capacity = 16;
-    communityChest.items = Array.from({ length: communityChest.capacity }, () => null);
     const ui = new UIManager();
     const effects = new EffectManager();
     const input = initializeInput(canvas);
@@ -445,8 +440,6 @@ const init = async () => {
     ui.bindCraftingHandler(attemptCraftStructure);
     ui.bindInventoryItemHandler(handleInventoryItemUse);
     ui.bindInventoryReorderHandler(handleInventoryReorder);
-    ui.bindChestItemHandler(handleChestItemClick);
-    ui.bindChestReorderHandler(handleChestReorder);
 
     const gameState = {
         phase: "day",
@@ -482,17 +475,6 @@ const init = async () => {
 
     function showStartPanel(panelKey = "menu") {
         const key = startPanels[panelKey] ? panelKey : "menu";
-        // If an element inside the start overlay has focus and we're about to hide it,
-        // blur it first so aria-hidden isn't applied to a focused element.
-        try {
-            const active = document.activeElement;
-            if (active && startOverlay && startOverlay.contains(active)) {
-                active.blur();
-            }
-        } catch (err) {
-            // ignore
-        }
-
         Object.entries(startPanels).forEach(([candidate, panel]) => {
             if (!panel) return;
             const hidden = candidate !== key;
@@ -978,9 +960,7 @@ const init = async () => {
                 })),
                 enemiesActive: !!enemyWaves.active,
                 toSpawn: enemyWaves.toSpawn || 0,
-                chests: loot && Array.isArray(loot.chests) ? loot.chests.map((c) => ({ id: c.id, opened: !!c.opened })) : [],
-                communityChest: communityChest.getItems ? communityChest.getItems() : (communityChest.items ? communityChest.items.map(i => i ? { ...i } : null) : null),
-                communityChestMeta: houseInterior.chest ? { id: houseInterior.chest.id, position: { ...houseInterior.chest.position }, radius: houseInterior.chest.radius } : null
+                chests: loot && Array.isArray(loot.chests) ? loot.chests.map((c) => ({ id: c.id, opened: !!c.opened })) : []
             };
         }
 
@@ -1030,28 +1010,6 @@ const init = async () => {
                     if (local && typeof chestState.opened === "boolean") {
                         local.opened = chestState.opened;
                     }
-                }
-            }
-            if (Array.isArray(fakeHostState.communityChest) && communityChest) {
-                // Replace local chest contents with host snapshot
-                const snapshot = fakeHostState.communityChest;
-                communityChest.items = snapshot.map((it) => it ? { ...(it || {}) } : null);
-            }
-            if (fakeHostState.communityChestMeta && typeof fakeHostState.communityChestMeta === 'object') {
-                try {
-                    const meta = fakeHostState.communityChestMeta;
-                    if (!houseInterior.chest) houseInterior.chest = {};
-                    if (meta.position && typeof meta.position === 'object') {
-                        houseInterior.chest.position = { ...(meta.position || {}) };
-                    }
-                    if (Number.isFinite(meta.radius)) {
-                        houseInterior.chest.radius = meta.radius;
-                    }
-                    if (meta.id) {
-                        houseInterior.chest.id = meta.id;
-                    }
-                } catch (err) {
-                    // ignore malformed meta
                 }
             }
         });
@@ -1157,13 +1115,6 @@ const init = async () => {
             width: 120,
             height: 72,
             radius: 72
-        }
-        ,
-        // Community chest entity inside the house (visual + interaction point)
-        chest: {
-            id: "community_chest_1",
-            position: { x: 150, y: 176 },
-            radius: 46
         }
     };
     const doorReachY = Math.max(
@@ -1350,15 +1301,6 @@ function refreshResourceUI(resourcesSnapshot) {
         selectedIndex: gameState.selectedInventoryIndex,
         equipped: equippedDetails
     });
-
-    // Provide chest data to UI when available
-    if (gameState.chestOpen) {
-        ui.setInventoryData(snapshot, items, inventory.getCapacity(), {
-            selectedIndex: gameState.selectedInventoryIndex,
-            equipped: equippedDetails,
-            chestItems: (communityChest.items || []).map((i) => i ? { ...i } : null)
-        });
-    }
 
     if (gameState.craftingOpen) {
         refreshCraftingMenu();
@@ -1695,98 +1637,6 @@ function handleInventoryReorder(details) {
     }
 
     refreshResourceUI();
-}
-
-// Handle clicking items in the chest UI (e.g., pick up into inventory)
-function handleChestItemClick({ index, event } = {}) {
-    if (!Number.isInteger(index) || index < 0) return;
-    const chestItems = communityChest.items || [];
-    const item = chestItems[index];
-    if (!item) return;
-    // Try to move one unit (or whole stack if non-stackable) into player inventory
-    const removed = communityChest.removeItem((it, idx) => idx === index);
-    if (!removed) return;
-    const added = inventory.addItem(removed);
-    if (!added) {
-        // put it back
-        communityChest.items[index] = removed;
-        ui.showMessage('Inventory full. Could not take item.', 1.6, '#ff8888');
-        return;
-    }
-    ui.showMessage(`Took ${removed.name || 'item'} from community chest.`, 1.6, '#7be0a6');
-    broadcastCommunityChestUpdate();
-    refreshResourceUI();
-}
-
-function handleChestReorder(details) {
-    // Allow rearranging inside the chest or moving from inventory to chest via drag/drop
-    if (!details) return;
-    const { fromIndex, toIndex, source, target } = details;
-    const src = source || '';
-    const tgt = target || '';
-    // Debug: log chest reorder attempts so we can trace drag/drop failures
-    try {
-        console.debug('[Main] handleChestReorder called', { fromIndex, toIndex, source, target, details });
-    } catch (err) {
-        // ignore
-    }
-    // Treat any non-chest source as player's inventory (grid, bar, etc.)
-    if (src !== 'chest' && tgt === 'chest') {
-        // move from player inventory to chest
-        const item = inventory.getItemAt(fromIndex);
-        if (!item) return;
-        // remove one unit from inventory
-        const removed = inventory.removeItem((it, idx) => idx === fromIndex);
-        if (!removed) return;
-        const success = communityChest.addItem(removed);
-        if (!success) {
-            // put back
-            inventory.addItem(removed);
-            ui.showMessage('Community chest is full.', 1.6, '#ff8888');
-            return;
-        }
-        broadcastCommunityChestUpdate();
-        refreshResourceUI();
-        return;
-    }
-    // Chest -> any non-chest target (grid, bar, etc.)
-    if (src === 'chest' && tgt !== 'chest') {
-        // move from chest to player inventory
-        const chestItems = communityChest.items || [];
-        if (!Number.isFinite(fromIndex) || fromIndex < 0) return;
-        const removed = communityChest.removeItem((it, idx) => idx === fromIndex);
-        if (!removed) return;
-        const added = inventory.addItem(removed);
-        if (!added) {
-            communityChest.items[fromIndex] = removed;
-            ui.showMessage('Inventory full. Could not move item.', 1.6, '#ff8888');
-            return;
-        }
-        broadcastCommunityChestUpdate();
-        refreshResourceUI();
-        return;
-    }
-    // internal chest reorder not yet supported beyond UI visual
-}
-
-function broadcastCommunityChestUpdate() {
-    if (!isMultiplayerReady()) return;
-    try {
-        const payload = (communityChest.items || []).map((it) => it ? { ...it } : null);
-        multiplayerInstance.emit('community:chest:update', { items: payload });
-    } catch (err) {
-        // ignore
-    }
-}
-
-// Listen for chest updates from peers (host-authoritative updates should flow via world snapshot)
-if (multiplayerInstance) {
-    multiplayerInstance.onEvent('community:chest:update', ({ payload, from }) => {
-        if (!payload || !Array.isArray(payload.items)) return;
-        // apply update locally
-        communityChest.items = payload.items.map((it) => it ? { ...(it || {}) } : null);
-        refreshResourceUI();
-    });
 }
 
     function setSettingsTab(tabId = "info") {
@@ -2300,20 +2150,6 @@ if (multiplayerInstance) {
         refreshResourceUI();
     }
 
-    function openCommunityChest() {
-        gameState.inventoryOpen = true;
-        ui.toggleInventory(true);
-        gameState.chestOpen = true;
-        refreshResourceUI();
-    }
-
-    function closeCommunityChest() {
-        gameState.chestOpen = false;
-        gameState.inventoryOpen = false;
-        ui.toggleInventory(false);
-        refreshResourceUI();
-    }
-
 
     function isInsideDoorZone(position, radius = houseInterior.door.radius) {
         const dx = position.x - houseInterior.door.position.x;
@@ -2360,9 +2196,8 @@ if (multiplayerInstance) {
         const doorPosition = world.getHouseDoorOutsidePosition();
         gameState.outsideReturnPosition = { x: player.position.x, y: player.position.y };
         interiorState.position = { ...houseInterior.spawn };
-    gameState.inHouse = true;
-    gameState.inventoryOpen = false;
-    gameState.chestOpen = false;
+        gameState.inHouse = true;
+        gameState.inventoryOpen = false;
         ui.toggleInventory(false);
         input.buildSelection = null;
         gameState.currentBuildSelection = null;
@@ -2385,8 +2220,7 @@ if (multiplayerInstance) {
         player.position.x = target.x;
         player.position.y = target.y;
         closeCraftingMenu();
-    gameState.inHouse = false;
-    gameState.chestOpen = false;
+        gameState.inHouse = false;
         gameState.outsideReturnPosition = null;
         ui.showMessage("Back outside.", 1.4, "#d5dde8");
         input.mouse.clicked = false;
@@ -2662,18 +2496,6 @@ function handleInput(deltaSeconds) {
             input.interact = false;
             return;
         }
-        // If inside house, check for chest interaction at chest position
-        if (gameState.inHouse && houseInterior.chest && houseInterior.chest.position) {
-            const chestPos = houseInterior.chest.position;
-            const dx = interiorState.position.x - chestPos.x;
-            const dy = interiorState.position.y - chestPos.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist <= (houseInterior.chest.radius || 48)) {
-                openCommunityChest();
-                input.interact = false;
-                return;
-            }
-        }
         const nearbyChest = loot.findNearby(player.position);
         if (nearbyChest) {
             const rewards = loot.openChest(nearbyChest, { inventory, player, ui, effects });
@@ -2917,11 +2739,10 @@ function updateGame(deltaSeconds) {
             startNightPhase();
         }
 
-        // Determine who should run enemy spawning / authoritative updates:
-        // - Singleplayer (no lobby) should run enemies locally.
-        // - In multiplayer, only the host should run enemies.
-        const authoritativeForEnemies = (!multiplayerInstance) || (!multiplayerState.lobbyId) || multiplayerState.isHost;
-        const waveEvents = authoritativeForEnemies
+        // Run enemy spawning/updates when in singleplayer (no lobby) or when this client is the host.
+        // If connected to a multiplayer lobby and not the host, skip authoritative enemy updates.
+        const shouldRunEnemies = !multiplayerState.lobbyId || multiplayerState.isHost || !multiplayerInstance;
+        const waveEvents = shouldRunEnemies
             ? enemyWaves.update(deltaSeconds, world, structures, inventory, effects, player, gameState.phase === "night")
             : { playerHits: [] };
         structures.update(deltaSeconds, enemyWaves.enemies, effects);
@@ -3171,35 +2992,6 @@ function updateGame(deltaSeconds) {
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText("Press E to craft", tableX + table.width / 2, tableY - 32);
-        }
-        // Draw the community chest in the interior
-        const chest = houseInterior.chest;
-        if (chest && chest.position) {
-            const chestX = offsetX + chest.position.x;
-            const chestY = offsetY + chest.position.y;
-            const chestAsset = getAsset("chest");
-            ctx.save();
-            if (chestAsset?.loaded) {
-                const w = 72;
-                const h = Math.max(36, w * (chestAsset.image.height ? chestAsset.image.height / chestAsset.image.width : 0.5));
-                ctx.drawImage(chestAsset.image, chestX - w / 2, chestY - h / 2, w, h);
-            } else {
-                ctx.fillStyle = "#6b3f1f";
-                ctx.fillRect(chestX - 28, chestY - 16, 56, 32);
-                ctx.fillStyle = "#4b2f12";
-                ctx.fillRect(chestX - 24, chestY - 10, 48, 20);
-            }
-            // Show prompt when player stands near chest
-            if (gameState.inHouse && Math.hypot(interiorState.position.x - chest.position.x, interiorState.position.y - chest.position.y) <= chest.radius) {
-                ctx.fillStyle = "rgba(12, 18, 26, 0.6)";
-                ctx.fillRect(chestX - 84, chestY - 64, 168, 28);
-                ctx.fillStyle = "#e9efff";
-                ctx.font = "17px Segoe UI";
-                ctx.textAlign = "center";
-                ctx.textBaseline = "middle";
-                ctx.fillText("Press E to open community chest", chestX, chestY - 48);
-            }
-            ctx.restore();
         }
         ctx.restore();
 
