@@ -306,6 +306,14 @@ const init = async () => {
             // aligned with the host while avoiding remote construction complexities.
             enemyWaves.enemies = hostState.enemies.map((e) => ({ ...(e || {}) }));
         }
+        if (typeof hostState.enemiesActive === "boolean") {
+            enemyWaves.active = !!hostState.enemiesActive;
+        } else if (Array.isArray(hostState.enemies) && hostState.enemies.length > 0) {
+            enemyWaves.active = true;
+        }
+        if (Number.isFinite(hostState.toSpawn)) {
+            enemyWaves.toSpawn = hostState.toSpawn;
+        }
     }
 
     function handleRemoteStructurePlacement(payload) {
@@ -944,6 +952,8 @@ const init = async () => {
                     waveNumber: e.waveNumber,
                     hitFlash: e.hitFlash
                 })),
+                enemiesActive: !!enemyWaves.active,
+                toSpawn: enemyWaves.toSpawn || 0,
                 chests: loot && Array.isArray(loot.chests) ? loot.chests.map((c) => ({ id: c.id, opened: !!c.opened })) : []
             };
         }
@@ -978,6 +988,14 @@ const init = async () => {
             if (Number.isFinite(fakeHostState.houseHp) && world && typeof world.house === "object") world.house.hp = fakeHostState.houseHp;
             if (Array.isArray(fakeHostState.enemies)) {
                 enemyWaves.enemies = fakeHostState.enemies.map((e) => ({ ...(e || {}) }));
+            }
+            if (typeof fakeHostState.enemiesActive === "boolean") {
+                enemyWaves.active = !!fakeHostState.enemiesActive;
+            } else if (Array.isArray(fakeHostState.enemies) && fakeHostState.enemies.length > 0) {
+                enemyWaves.active = true;
+            }
+            if (Number.isFinite(fakeHostState.toSpawn)) {
+                enemyWaves.toSpawn = fakeHostState.toSpawn;
             }
             if (Array.isArray(fakeHostState.chests) && loot) {
                 // Apply opened state for known chests; do not override positions so clients keep their own chest placements
@@ -2715,7 +2733,10 @@ function updateGame(deltaSeconds) {
             startNightPhase();
         }
 
-        const waveEvents = enemyWaves.update(deltaSeconds, world, structures, inventory, effects, player, gameState.phase === "night");
+        // Only the host should run enemy spawning and authoritative updates.
+        const waveEvents = (multiplayerState.isHost || !multiplayerInstance)
+            ? enemyWaves.update(deltaSeconds, world, structures, inventory, effects, player, gameState.phase === "night")
+            : { playerHits: [] };
         structures.update(deltaSeconds, enemyWaves.enemies, effects);
         effects.update(deltaSeconds);
 
@@ -3027,7 +3048,37 @@ function updateGame(deltaSeconds) {
             world.drawHouse(ctx, gameState.camera);
             structures.draw(ctx, gameState.camera);
             for (const enemy of enemyWaves.enemies) {
-                enemy.draw(ctx, gameState.camera);
+                // If enemy instance has a draw method (host/local), call it. If not (plain snapshot), draw a simple representation.
+                if (enemy && typeof enemy.draw === "function") {
+                    try {
+                        enemy.draw(ctx, gameState.camera);
+                    } catch (err) {
+                        // Fall back to simple draw below on error
+                        const e = enemy || {};
+                        const drawX = (e.position?.x ?? 0) - gameState.camera.x;
+                        const drawY = (e.position?.y ?? 0) - gameState.camera.y;
+                        const radius = e.radius ?? 18;
+                        ctx.fillStyle = e.hitFlash > 0 ? "#f26d85" : "#b84a62";
+                        ctx.beginPath();
+                        ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+                } else {
+                    const e = enemy || {};
+                    const drawX = (e.position?.x ?? 0) - gameState.camera.x;
+                    const drawY = (e.position?.y ?? 0) - gameState.camera.y;
+                    const radius = e.radius ?? 18;
+                    ctx.fillStyle = e.hitFlash > 0 ? "#f26d85" : "#b84a62";
+                    ctx.beginPath();
+                    ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    // Health bar
+                    ctx.fillStyle = "#000";
+                    ctx.fillRect(drawX - 18, drawY - radius - 10, 36, 4);
+                    ctx.fillStyle = "#d5dbe0";
+                    const hpPercent = (e.health && e.maxHealth) ? Math.max(0, Math.min(1, e.health / e.maxHealth)) : 1;
+                    ctx.fillRect(drawX - 18, drawY - radius - 10, 36 * hpPercent, 4);
+                }
             }
             const pointer = { x: Number.isFinite(input.mouse.worldX) ? input.mouse.worldX : player.position.x, y: Number.isFinite(input.mouse.worldY) ? input.mouse.worldY : player.position.y };
             player.draw(ctx, gameState.camera, pointer);
