@@ -1,12 +1,62 @@
-import { ENEMY_STATS, WORLD_SETTINGS } from "./constants.js";
+import { ENEMY_STATS, WORLD_SETTINGS, MAP_WIDTH, MAP_HEIGHT } from "./constants.js";
 import { distance } from "./utils.js";
 import { getAsset } from "./assets.js";
 import { random } from "./rng.js";
 
-function randomSpawnPosition() {
+const BASE_SPAWN_RADIUS = WORLD_SETTINGS.resourceRadius + 260;
+const SPAWN_RADIUS_PER_EXPANSION = 120;
+const SPAWN_MARGIN = 48;
+
+function resolveHousePosition(world) {
+    if (world?.house?.position) {
+        return world.house.position;
+    }
+    return WORLD_SETTINGS.housePosition;
+}
+
+function resolveWorldSize(world) {
+    if (world) {
+        const width = world.getWidth?.() ?? world.width ?? MAP_WIDTH;
+        const height = world.getHeight?.() ?? world.height ?? MAP_HEIGHT;
+        if (Number.isFinite(width) && Number.isFinite(height)) {
+            return { width, height };
+        }
+    }
+    return { width: MAP_WIDTH, height: MAP_HEIGHT };
+}
+
+function resolveExpansionCount(world) {
+    if (!world) return 0;
+    if (typeof world.getExpansionCount === "function") {
+        const value = world.getExpansionCount();
+        return Number.isFinite(value) ? Math.max(0, value) : 0;
+    }
+    if (Number.isFinite(world.expansionCount)) {
+        return Math.max(0, world.expansionCount);
+    }
+    return 0;
+}
+
+function computeSpawnRadius(world) {
+    const expansions = resolveExpansionCount(world);
+    const desiredRadius = BASE_SPAWN_RADIUS + expansions * SPAWN_RADIUS_PER_EXPANSION;
+    const housePosition = resolveHousePosition(world);
+    const { width, height } = resolveWorldSize(world);
+
+    const left = housePosition.x - SPAWN_MARGIN;
+    const right = width - housePosition.x - SPAWN_MARGIN;
+    const top = housePosition.y - SPAWN_MARGIN;
+    const bottom = height - housePosition.y - SPAWN_MARGIN;
+    const clampCandidates = [left, right, top, bottom]
+        .map((value) => (Number.isFinite(value) ? Math.max(SPAWN_MARGIN, value) : SPAWN_MARGIN));
+    const maxRadius = Math.max(SPAWN_MARGIN, Math.min(...clampCandidates));
+    return Math.min(Math.max(SPAWN_MARGIN, desiredRadius), maxRadius);
+}
+
+function randomSpawnPosition(world) {
     const edge = Math.floor(random() * 4);
-    const { x, y } = WORLD_SETTINGS.housePosition;
-    const radius = WORLD_SETTINGS.resourceRadius + 260;
+    const { x, y } = resolveHousePosition(world);
+    const radius = computeSpawnRadius(world);
     switch (edge) {
         case 0:
             return { x: x - radius, y: y - radius + random() * radius * 2 };
@@ -22,8 +72,8 @@ function randomSpawnPosition() {
 const PLAYER_AGGRO_RADIUS = 280;
 
 export class Enemy {
-    constructor(waveNumber, modifiers = {}) {
-        this.position = randomSpawnPosition();
+    constructor(waveNumber, modifiers = {}, world = null) {
+        this.position = randomSpawnPosition(world);
         this.radius = 18;
         const healthMultiplier = modifiers.healthMultiplier ?? 1;
         const speedMultiplier = modifiers.speedMultiplier ?? 1;
@@ -184,7 +234,7 @@ export class EnemyWaveManager {
         const events = { playerHits: [] };
         this.spawnCooldown -= deltaSeconds;
         if (this.toSpawn > 0 && this.spawnCooldown <= 0) {
-            const enemy = new Enemy(this.waveNumber, this.modifiers);
+            const enemy = new Enemy(this.waveNumber, this.modifiers, world);
             this.enemies.push(enemy);
             this.toSpawn -= 1;
             this.spawnCooldown = Math.max(0.3, 1.4 - this.waveNumber * 0.12);
