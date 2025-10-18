@@ -2047,11 +2047,11 @@ const init = async () => {
             radius: 72
         },
         computerPlacement: {
-            width: 120,
-            height: 72,
+            width: 104,
+            height: 64,
             interactRadius: 84,
-            clearance: 8,
-            snapMargin: 28
+            clearance: 4,
+            snapMargin: 24
         },
         computers: []
     };
@@ -2115,20 +2115,9 @@ const init = async () => {
         if (!isRectInsideInteriorBounds(rect)) {
             return false;
         }
-        for (const piece of houseInterior.furniture) {
-            const furnitureRect = {
-                left: piece.x - clearance,
-                right: piece.x + piece.width + clearance,
-                top: piece.y - clearance,
-                bottom: piece.y + piece.height + clearance
-            };
-            if (rectanglesOverlap(rect, furnitureRect)) {
-                return false;
-            }
-        }
         const table = houseInterior.craftingTable;
         if (table) {
-            const tableRect = makeRect(table.position, table.width, table.height, clearance + 8);
+            const tableRect = makeRect(table.position, table.width, table.height, clearance + 4);
             if (rectanglesOverlap(rect, tableRect)) {
                 return false;
             }
