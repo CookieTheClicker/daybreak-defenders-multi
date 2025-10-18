@@ -71,6 +71,45 @@ function randomSpawnPosition(world) {
 
 const PLAYER_AGGRO_RADIUS = 280;
 
+export function drawEnemySprite(ctx, camera, enemyLike) {
+    if (!ctx || !enemyLike) {
+        return;
+    }
+    const camX = Number.isFinite(camera?.x) ? camera.x : 0;
+    const camY = Number.isFinite(camera?.y) ? camera.y : 0;
+    const position = enemyLike.position || { x: 0, y: 0 };
+    const drawX = (Number.isFinite(position.x) ? position.x : 0) - camX;
+    const drawY = (Number.isFinite(position.y) ? position.y : 0) - camY;
+    const radius = Number.isFinite(enemyLike.radius) ? enemyLike.radius : 18;
+    const asset = getAsset("enemy");
+
+    if (asset?.loaded && asset.image) {
+        const drawSize = 44;
+        const aspect = asset.image.width / asset.image.height;
+        const width = drawSize;
+        const height = width / (aspect || 1);
+        ctx.save();
+        if (enemyLike.hitFlash > 0) {
+            ctx.globalAlpha = 0.9;
+        }
+        ctx.drawImage(asset.image, drawX - width / 2, drawY - height / 2, width, height);
+        ctx.restore();
+    } else {
+        ctx.fillStyle = enemyLike.hitFlash > 0 ? "#f26d85" : "#b84a62";
+        ctx.beginPath();
+        ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    const maxHealth = Number.isFinite(enemyLike.maxHealth) ? enemyLike.maxHealth : enemyLike.health || 1;
+    const health = Number.isFinite(enemyLike.health) ? enemyLike.health : maxHealth;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(drawX - 18, drawY - radius - 10, 36, 4);
+    ctx.fillStyle = "#d5dbe0";
+    const pct = maxHealth > 0 ? Math.max(0, Math.min(1, health / maxHealth)) : 0;
+    ctx.fillRect(drawX - 18, drawY - radius - 10, 36 * pct, 4);
+}
+
 export class Enemy {
     constructor(waveNumber, modifiers = {}, world = null) {
         this.position = randomSpawnPosition(world);
@@ -166,31 +205,7 @@ export class Enemy {
 
     draw(ctx, camera) {
         if (!this.alive) return;
-        const drawX = this.position.x - camera.x;
-        const drawY = this.position.y - camera.y;
-        const asset = getAsset("enemy");
-        if (asset?.loaded) {
-            const drawSize = 44;
-            const aspect = asset.image.width / asset.image.height;
-            const width = drawSize;
-            const height = width / aspect;
-            ctx.save();
-            if (this.hitFlash > 0) {
-                ctx.globalAlpha = 0.9;
-            }
-            ctx.drawImage(asset.image, drawX - width / 2, drawY - height / 2, width, height);
-            ctx.restore();
-        } else {
-            ctx.fillStyle = this.hitFlash > 0 ? "#f26d85" : "#b84a62";
-            ctx.beginPath();
-            ctx.arc(drawX, drawY, this.radius, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        ctx.fillStyle = "#000";
-        ctx.fillRect(drawX - 18, drawY - this.radius - 10, 36, 4);
-        ctx.fillStyle = "#d5dbe0";
-        ctx.fillRect(drawX - 18, drawY - this.radius - 10, 36 * (this.health / this.maxHealth), 4);
+        drawEnemySprite(ctx, camera, this);
     }
 }
 

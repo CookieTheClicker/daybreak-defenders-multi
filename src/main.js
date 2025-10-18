@@ -11,7 +11,7 @@ import {
 import { Player } from "./player.js";
 import { ResourceManager } from "./resources.js";
 import { StructureManager } from "./buildings.js";
-import { EnemyWaveManager } from "./enemies.js";
+import { EnemyWaveManager, drawEnemySprite } from "./enemies.js";
 import { World } from "./world.js";
 import { initializeInput } from "./input.js";
 import { UIManager } from "./ui.js";
@@ -34,6 +34,25 @@ const STRUCTURE_ICON_PATHS = {
 function formatName(word = "") {
     if (!word) return "";
     return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+function hydrateEnemySnapshot(snapshot) {
+    if (!snapshot) {
+        return null;
+    }
+    const enemy = {
+        position: { x: 0, y: 0 },
+        radius: 18,
+        maxHealth: 1,
+        health: 1,
+        ...snapshot
+    };
+    enemy.position = {
+        x: Number.isFinite(enemy.position?.x) ? enemy.position.x : 0,
+        y: Number.isFinite(enemy.position?.y) ? enemy.position.y : 0
+    };
+    enemy.draw = (ctx, camera) => drawEnemySprite(ctx, camera, enemy);
+    return enemy;
 }
 
 const init = async () => {
@@ -302,9 +321,10 @@ const init = async () => {
 
         // If host provides enemy list snapshot, replace local enemies to match host.
         if (Array.isArray(hostState.enemies)) {
-            // Shallow-copy host-provided enemy snapshots. This keeps client rendering and logic
-            // aligned with the host while avoiding remote construction complexities.
-            enemyWaves.enemies = hostState.enemies.map((e) => ({ ...(e || {}) }));
+            // Hydrate host-provided enemy snapshots so clients can render full sprites without running enemy logic.
+            enemyWaves.enemies = hostState.enemies
+                .map((snapshot) => hydrateEnemySnapshot(snapshot))
+                .filter(Boolean);
         }
         if (typeof hostState.enemiesActive === "boolean") {
             enemyWaves.active = !!hostState.enemiesActive;
@@ -427,6 +447,252 @@ const init = async () => {
     const mpMemberList = document.getElementById("mp-member-list");
     const mpStartButton = document.getElementById("mp-start-btn");
     const mpLeaveButton = document.getElementById("mp-leave-btn");
+    const chatPanel = document.getElementById("chat-panel");
+    const chatLog = document.getElementById("chat-log");
+    const chatForm = document.getElementById("chat-form");
+    const chatInput = document.getElementById("chat-input");
+    const CHAT_EVENT = "chat:message";
+    const CHAT_HISTORY_LIMIT = 80;
+    const CHAT_MESSAGE_LIMIT = 200;
+    const CHAT_NAME_LIMIT = 32;
+    const chatState = {
+        entries: [],
+        unread: false
+    };
+    let lobbyMembersTracked = false;
+    const knownLobbyMembers = new Map();
+
+    if (chatPanel && !chatPanel.dataset.state) {
+        chatPanel.dataset.state = "idle";
+    }
+
+    const resolvePlayerNameById = (id, fallback = "Player") => {
+        if (!id) {
+            return fallback;
+        }
+        if (multiplayerInstance && id === multiplayerInstance.id) {
+            return multiplayerInstance.playerName || fallback;
+        }
+        if (multiplayerClient && id === multiplayerClient.id) {
+            return multiplayerClient.playerName || fallback;
+        }
+        const memberMatch = multiplayerState.members.find((member) => member?.id === id);
+        if (memberMatch?.name) {
+            return memberMatch.name;
+        }
+        const peer = remotePlayers[id];
+        if (peer?.name) {
+            return peer.name;
+        }
+        return fallback;
+    };
+
+    const sanitizeChatText = (value) => {
+        if (typeof value !== "string") {
+            return "";
+        }
+        return value.replace(/\s+/g, " ").trim();
+    };
+
+    const sanitizeChatName = (value, fallback = "Player") => {
+        const base = sanitizeChatText(value) || fallback;
+        return base.slice(0, CHAT_NAME_LIMIT);
+    };
+
+    const scrollChatToBottom = () => {
+        if (!chatLog) return;
+        chatLog.scrollTop = chatLog.scrollHeight;
+    };
+
+    const updateChatPanelState = () => {
+        if (!chatPanel) {
+            return;
+        }
+        if (chatState.unread) {
+            chatPanel.dataset.state = "unread";
+        } else if (document.activeElement === chatInput) {
+            chatPanel.dataset.state = "active";
+        } else {
+            chatPanel.dataset.state = "idle";
+        }
+    };
+
+    const clearChatUnread = () => {
+        if (!chatState.unread) {
+            updateChatPanelState();
+            return;
+        }
+        chatState.unread = false;
+        updateChatPanelState();
+    };
+
+    const markChatUnread = () => {
+        chatState.unread = true;
+        updateChatPanelState();
+    };
+
+    const appendChatMessage = ({ id = "", name = "Player", text = "", system = false, self = false, timestamp = Date.now() }) => {
+        if (!chatLog) {
+            return;
+        }
+        const content = sanitizeChatText(text);
+        if (!content) {
+            return;
+        }
+        const displayName = sanitizeChatName(name);
+        const messageEl = document.createElement("div");
+        const classNames = ["chat-message"];
+        if (system) {
+            classNames.push("chat-message--system");
+        }
+        if (self) {
+            classNames.push("chat-message--self");
+        }
+        messageEl.className = classNames.join(" ");
+        messageEl.dataset.timestamp = String(timestamp);
+        messageEl.dataset.sender = id;
+
+        if (system) {
+            messageEl.textContent = content;
+        } else {
+            const authorSpan = document.createElement("span");
+            authorSpan.className = "chat-message-author";
+            authorSpan.textContent = `${displayName}:`;
+            const textSpan = document.createElement("span");
+            textSpan.className = "chat-message-text";
+            textSpan.textContent = content;
+            messageEl.append(authorSpan, textSpan);
+        }
+
+        chatLog.append(messageEl);
+        chatState.entries.push({ id, element: messageEl });
+        while (chatState.entries.length > CHAT_HISTORY_LIMIT) {
+            const removed = chatState.entries.shift();
+            if (removed?.element?.parentElement) {
+                removed.element.parentElement.removeChild(removed.element);
+            }
+        }
+        requestAnimationFrame(scrollChatToBottom);
+
+        if (system) {
+            if (!chatState.unread) {
+                updateChatPanelState();
+            }
+            return;
+        }
+
+        if (self || document.activeElement === chatInput) {
+            clearChatUnread();
+        } else {
+            markChatUnread();
+        }
+    };
+
+    const addSystemChatMessage = (message) => {
+        appendChatMessage({ text: message, system: true, name: "System" });
+    };
+
+    const focusChatInput = () => {
+        if (!chatInput) {
+            return;
+        }
+        chatInput.focus();
+        requestAnimationFrame(scrollChatToBottom);
+    };
+
+    const canAutofocusChat = () => {
+        if (!chatInput || chatInput.disabled) {
+            return false;
+        }
+        if (startOverlay && startOverlay.getAttribute("aria-hidden") !== "true") {
+            return false;
+        }
+        if (pauseOverlay && pauseOverlay.getAttribute("aria-hidden") !== "true") {
+            return false;
+        }
+        if (settingsModal && settingsModal.getAttribute("aria-hidden") !== "true") {
+            return false;
+        }
+        if (gameOverOverlay && gameOverOverlay.getAttribute("aria-hidden") !== "true") {
+            return false;
+        }
+        return true;
+    };
+
+    if (chatPanel) {
+        chatPanel.addEventListener("mouseenter", clearChatUnread);
+        chatPanel.addEventListener("mouseleave", updateChatPanelState);
+    }
+
+    if (chatLog) {
+        chatLog.addEventListener("click", clearChatUnread);
+    }
+
+    if (chatInput) {
+        chatInput.addEventListener("focus", clearChatUnread);
+        chatInput.addEventListener("blur", updateChatPanelState);
+    }
+
+    if (chatForm && chatInput) {
+        chatForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const sanitized = sanitizeChatText(chatInput.value).slice(0, CHAT_MESSAGE_LIMIT);
+            if (!sanitized) {
+                chatInput.value = "";
+                return;
+            }
+            const senderId = (multiplayerInstance && multiplayerInstance.id) || (multiplayerClient && multiplayerClient.id) || "local";
+            const senderName = (multiplayerInstance && multiplayerInstance.playerName) || (multiplayerClient && multiplayerClient.playerName) || "You";
+            appendChatMessage({
+                id: senderId,
+                name: senderName,
+                text: sanitized,
+                self: true
+            });
+            chatInput.value = "";
+            clearChatUnread();
+            const payload = {
+                text: sanitized,
+                name: senderName,
+                senderId,
+                ts: Date.now()
+            };
+            if (multiplayerInstance) {
+                multiplayerInstance.emit(CHAT_EVENT, payload);
+            } else if (multiplayerClient && typeof multiplayerClient.emit === "function") {
+                multiplayerClient.emit(CHAT_EVENT, payload);
+            }
+        });
+    }
+
+    window.addEventListener("keydown", (event) => {
+        if (!canAutofocusChat()) {
+            return;
+        }
+        if (event.defaultPrevented) {
+            return;
+        }
+        const active = document.activeElement;
+        if (active instanceof HTMLElement) {
+            const tag = active.tagName;
+            const typing = active.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || active === chatInput;
+            if (typing) {
+                return;
+            }
+        }
+        if (event.key === "Enter" || event.key === "/") {
+            focusChatInput();
+            event.preventDefault();
+        }
+    });
+
+    window.addEventListener("focus", () => {
+        if (!chatState.unread) {
+            updateChatPanelState();
+        }
+    });
+
+    addSystemChatMessage("Chat ready. Press Enter or / to focus.");
     if (mpDifficultySelect) {
         mpDifficultySelect.innerHTML = "";
         Object.values(DIFFICULTY_PRESETS).forEach((preset) => {
@@ -857,6 +1123,7 @@ const init = async () => {
         });
 
         multiplayerInstance.onLobbyUpdate((snapshot) => {
+            const previousLobbyId = multiplayerState.lobbyId;
             const previousHostId = multiplayerState.hostId;
             multiplayerState.lobbyId = snapshot?.lobbyId || null;
             multiplayerState.hostId = snapshot?.hostId || null;
@@ -866,9 +1133,49 @@ const init = async () => {
             }
             multiplayerState.members = Array.isArray(snapshot?.members) ? snapshot.members : [];
             multiplayerState.started = Boolean(snapshot?.started);
+            if (previousLobbyId !== multiplayerState.lobbyId) {
+                knownLobbyMembers.clear();
+                lobbyMembersTracked = false;
+                if (multiplayerState.lobbyId) {
+                    addSystemChatMessage(`Joined lobby ${multiplayerState.lobbyId}.`);
+                }
+            }
+            if (!lobbyMembersTracked) {
+                knownLobbyMembers.clear();
+                for (const member of multiplayerState.members) {
+                    if (!member?.id) {
+                        continue;
+                    }
+                    knownLobbyMembers.set(member.id, sanitizeChatName(member.name || resolvePlayerNameById(member.id)));
+                }
+                lobbyMembersTracked = true;
+            } else {
+                const previousMembers = new Map(knownLobbyMembers);
+                knownLobbyMembers.clear();
+                for (const member of multiplayerState.members) {
+                    if (!member?.id) {
+                        continue;
+                    }
+                    const displayName = sanitizeChatName(member.name || resolvePlayerNameById(member.id));
+                    knownLobbyMembers.set(member.id, displayName);
+                    if (!previousMembers.has(member.id)) {
+                        addSystemChatMessage(`${displayName} joined the lobby.`);
+                    } else {
+                        previousMembers.delete(member.id);
+                    }
+                }
+                for (const [leftId, leftName] of previousMembers.entries()) {
+                    const departureName = sanitizeChatName(leftName || resolvePlayerNameById(leftId));
+                    addSystemChatMessage(`${departureName} left the lobby.`);
+                }
+            }
             if (previousHostId !== multiplayerState.hostId) {
                 lastAppliedStructureVersion = NO_VERSION;
                 lastAppliedResourceVersion = NO_VERSION;
+                if (previousHostId && multiplayerState.hostId && previousHostId !== multiplayerState.hostId) {
+                    const newHostName = sanitizeChatName(resolvePlayerNameById(multiplayerState.hostId, "Host"));
+                    addSystemChatMessage(`${newHostName} is now the host.`);
+                }
             }
             if (!multiplayerState.started && multiplayerState.seed != null) {
                 applyWorldSeed(multiplayerState.seed, { force: true });
@@ -897,8 +1204,11 @@ const init = async () => {
             remotePlayers = {};
             lastAppliedStructureVersion = NO_VERSION;
             lastAppliedResourceVersion = NO_VERSION;
+            knownLobbyMembers.clear();
+            lobbyMembersTracked = false;
             updateLobbyUI();
             showStartPanel("menu");
+            addSystemChatMessage("You left the lobby.");
         });
 
         multiplayerInstance.onLobbyStarted(({ seed }) => {
@@ -907,11 +1217,15 @@ const init = async () => {
             }
             setLobbyStatus("Match starting...");
             startMultiplayerGame();
+            addSystemChatMessage("Match starting...");
         });
 
         multiplayerInstance.onLobbyError((error) => {
             if (!error) return;
             setLobbyStatus(error.error ? `Lobby error: ${error.error}` : "Lobby error.", true);
+            if (error?.error) {
+                addSystemChatMessage(`Lobby error: ${sanitizeChatText(error.error)}`);
+            }
         });
 
         multiplayerInstance.onEvent("structure:place", ({ payload }) => {
@@ -932,6 +1246,35 @@ const init = async () => {
                 pendingDifficultyIntent = "multiplayer";
                 updateDifficultySelection(key);
             }
+        });
+
+        multiplayerInstance.onEvent(CHAT_EVENT, ({ payload, from }) => {
+            if (!payload) {
+                return;
+            }
+            if (payload.system) {
+                const systemMessage = sanitizeChatText(payload.text).slice(0, CHAT_MESSAGE_LIMIT);
+                if (systemMessage) {
+                    addSystemChatMessage(systemMessage);
+                }
+                return;
+            }
+            const rawText = sanitizeChatText(payload.text).slice(0, CHAT_MESSAGE_LIMIT);
+            if (!rawText) {
+                return;
+            }
+            const senderId = payload.senderId || from || "";
+            if (senderId && multiplayerInstance && senderId === multiplayerInstance.id) {
+                return;
+            }
+            const displayName = sanitizeChatName(payload.name || resolvePlayerNameById(senderId));
+            appendChatMessage({
+                id: senderId,
+                name: displayName,
+                text: rawText,
+                self: false,
+                timestamp: Number.isFinite(payload.ts) ? payload.ts : Date.now()
+            });
         });
 
         // Host: periodically broadcast authoritative world snapshot so clients stay synced.
@@ -993,7 +1336,9 @@ const init = async () => {
             if (Number.isFinite(fakeHostState.phaseTimer)) gameState.phaseTimer = fakeHostState.phaseTimer;
             if (Number.isFinite(fakeHostState.houseHp) && world && typeof world.house === "object") world.house.hp = fakeHostState.houseHp;
             if (Array.isArray(fakeHostState.enemies)) {
-                enemyWaves.enemies = fakeHostState.enemies.map((e) => ({ ...(e || {}) }));
+                enemyWaves.enemies = fakeHostState.enemies
+                    .map((snapshot) => hydrateEnemySnapshot(snapshot))
+                    .filter(Boolean);
             }
             if (typeof fakeHostState.enemiesActive === "boolean") {
                 enemyWaves.active = !!fakeHostState.enemiesActive;

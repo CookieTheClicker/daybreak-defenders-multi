@@ -1,4 +1,38 @@
 const normalizeKey = (key) => (key.length === 1 ? key.toLowerCase() : key);
+const isTypingIntoTextField = (target) => {
+    if (!(target instanceof Element)) {
+        return false;
+    }
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        return true;
+    }
+    if (target.isContentEditable) {
+        return true;
+    }
+    return Boolean(target.closest("input, textarea, [contenteditable='true']"));
+};
+
+const NON_TEXT_INPUT_TYPES = new Set(["checkbox", "radio", "button", "submit", "reset", "color", "range", "file", "image", "hidden"]);
+
+const isTypingTarget = (target) => {
+    if (!(target instanceof HTMLElement)) {
+        return false;
+    }
+    if (target.isContentEditable) {
+        return true;
+    }
+    if (target instanceof HTMLInputElement) {
+        const type = (target.type || "").toLowerCase();
+        if (NON_TEXT_INPUT_TYPES.has(type)) {
+            return false;
+        }
+        return !target.readOnly && !target.disabled;
+    }
+    if (target instanceof HTMLTextAreaElement) {
+        return !target.readOnly && !target.disabled;
+    }
+    return false;
+};
 
 export function initializeInput(canvas) {
     const inputState = {
@@ -90,6 +124,9 @@ export function initializeInput(canvas) {
 
     window.addEventListener("keydown", (event) => {
         if (event.repeat) return;
+        if (isTypingTarget(event.target)) {
+            return;
+        }
 
         if (event.key === "Escape") {
             inputState.pauseToggle = true;
@@ -121,6 +158,9 @@ export function initializeInput(canvas) {
             }
         }
         if (/^[1-8]$/.test(key)) {
+            if (isTypingIntoTextField(event.target)) {
+                return;
+            }
             inputState.hotbarSelect = Number.parseInt(key, 10) - 1;
             event.preventDefault();
             return;
@@ -131,6 +171,9 @@ export function initializeInput(canvas) {
     });
 
     window.addEventListener("keyup", (event) => {
+        if (isTypingTarget(event.target)) {
+            return;
+        }
         const key = normalizeKey(event.key);
         const mapped = keyMap[key];
         if (!mapped) {
