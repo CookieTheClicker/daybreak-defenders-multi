@@ -1,12 +1,13 @@
 import { STRUCTURE_TYPES } from "./constants.js";
-import { resolveItemIconPath } from "./assets.js";
+import { resolveItemIconPath, PROP_REGISTRY } from "./assets.js";
 
 const DEFAULT_BUILD_MESSAGE = "No build selected. Select a structure kit from the hotbar.";
 
 const STRUCTURE_ICON_PATHS = {
     barricade: "assets/props/barricade.png",
     spike: "assets/props/spike.png",
-    turret: "assets/props/turret.png"
+    turret: "assets/props/turret.png",
+    computer: PROP_REGISTRY.computer
 };
 
 

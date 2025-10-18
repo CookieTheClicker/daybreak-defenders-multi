@@ -216,6 +216,22 @@
                 <button id="game-restart" class="restart-button">Restart Run</button>
             </div>
         </div>
+        <div id="computer-overlay" class="computer-overlay" aria-hidden="true">
+            <div class="computer-overlay__backdrop" aria-hidden="true"></div>
+            <div class="computer-overlay__content" role="dialog" aria-modal="true" aria-labelledby="computer-overlay-title">
+                <div class="computer-overlay__header">
+                    <h2 id="computer-overlay-title">Arcade Terminal</h2>
+                    <button type="button" id="computer-close" class="computer-overlay__close">Close</button>
+                </div>
+                <iframe
+                    id="computer-frame"
+                    class="computer-overlay__frame"
+                    title="Towers Minigame"
+                    src="assets/minigames/towers.html"
+                    loading="lazy">
+                </iframe>
+            </div>
+        </div>
         <div id="chat-panel">
             <div id="chat-header">
                 <span id="chat-title">Chat</span>

@@ -1,4 +1,5 @@
 ﻿// Asset loading helpers for optional sprite props dropped into assets/props.
+const COMPUTER_DATA_URI = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='44' rx='6' ry='6' fill='%231c2533'/><rect x='8' y='10' width='48' height='26' rx='3' ry='3' fill='%230a84ff'/><rect x='18' y='44' width='28' height='6' rx='2' ry='2' fill='%233b4658'/><rect x='14' y='50' width='36' height='6' rx='3' ry='3' fill='%23202733'/></svg>";
 export const PROP_REGISTRY = {
     player: "assets/props/player.png",
     enemy: "assets/props/enemy.png",
@@ -35,13 +36,15 @@ export const PROP_REGISTRY = {
     metalPickaxe: "assets/props/metal-pickaxe.png",
     metalPickaxeIcon: "assets/props/metal-pickaxe-icon.png",
     gemstonePickaxe: "assets/props/gemstone-pickaxe.png",
-    gemstonePickaxeIcon: "assets/props/gemstone-pickaxe-icon.png"
+    gemstonePickaxeIcon: "assets/props/gemstone-pickaxe-icon.png",
+    computer: COMPUTER_DATA_URI
 };
 
 const STRUCTURE_ICON_MAP = {
     barricade: PROP_REGISTRY.barricade,
     spike: PROP_REGISTRY.spike,
-    turret: PROP_REGISTRY.turret
+    turret: PROP_REGISTRY.turret,
+    computer: PROP_REGISTRY.computer
 };
 
 const ITEM_ICON_MAP = {

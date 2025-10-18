@@ -2,6 +2,8 @@ import { PLAYER_SPEED, PLAYER_SPRINT_MULTIPLIER, PLAYER_MAX_HEALTH, PLAYER_MELEE
 import { clamp, distance } from "./utils.js";
 import { getAsset, resolveItemWorldAsset, resolveItemWorldScale } from "./assets.js";
 
+const PLAYER_MELEE_RANGE = 54;
+
 export class Player {
     constructor(world, x, y, modifiers = {}) {
         this.world = world;
@@ -139,7 +141,7 @@ export class Player {
 
     performAttack(enemies) {
         if (!this.canAttack()) return [];
-        const range = 54;
+        const range = PLAYER_MELEE_RANGE;
         const hits = [];
         const damage = this.getAttackDamage();
         for (const enemy of enemies) {
@@ -169,7 +171,30 @@ export class Player {
                 hits.push({ enemy, killed, damage: applied });
             }
         }
-        if (hits.length > 0) {
+        this.applyAttackAnimation(hits.length);
+        return hits;
+    }
+
+    collectAttackTargets(enemies) {
+        if (!Array.isArray(enemies) || enemies.length === 0) {
+            return [];
+        }
+        const targets = [];
+        for (const enemy of enemies) {
+            if (!enemy || enemy.alive === false) continue;
+            try {
+                if (distance(this.position, enemy.position) <= PLAYER_MELEE_RANGE) {
+                    targets.push(enemy);
+                }
+            } catch {
+                // ignore malformed enemy data during target evaluation
+            }
+        }
+        return targets;
+    }
+
+    applyAttackAnimation(hitCount = 0) {
+        if (hitCount > 0) {
             this.meleeCooldown = PLAYER_MELEE_COOLDOWN;
         }
         const weaponName = this.equipment.weapon?.name?.toLowerCase() ?? "";
@@ -179,7 +204,6 @@ export class Player {
             duration: jabDuration,
             style: jabWeapon ? "jab" : undefined
         });
-        return hits;
     }
 
     takeDamage(amount) {

@@ -6,7 +6,8 @@ import {
     MAP_EXPANSION_INTERVAL_DAYS,
     STRUCTURE_TYPES,
     DEFAULT_DIFFICULTY,
-    DIFFICULTY_PRESETS
+    DIFFICULTY_PRESETS,
+    ENEMY_STATS
 } from "./constants.js";
 import { Player } from "./player.js";
 import { ResourceManager } from "./resources.js";
@@ -18,17 +19,18 @@ import { UIManager } from "./ui.js";
 import { Inventory, BERRY_STACK_KEY } from "./inventory.js";
 import { LootManager } from "./loot.js";
 import { EffectManager } from "./effects.js";
-import { loadAssets, getAsset } from "./assets.js";
-import { clamp } from "./utils.js";
+import { loadAssets, getAsset, PROP_REGISTRY } from "./assets.js";
+import { clamp, distance } from "./utils.js";
 import Multiplayer from "./multiplayer.js";
 import { setupMultiplayer } from "./multiplayer_integration_example.js";
-import { setRandomSeed, ensureSeed } from "./rng.js";
+import { setRandomSeed, ensureSeed, random } from "./rng.js";
 
-const CRAFTABLE_STRUCTURES = ["barricade", "spike", "turret"];
+const CRAFTABLE_STRUCTURES = ["barricade", "spike", "turret", "computer"];
 const STRUCTURE_ICON_PATHS = {
     barricade: "assets/props/barricade.png",
     spike: "assets/props/spike.png",
-    turret: "assets/props/turret.png"
+    turret: "assets/props/turret.png",
+    computer: PROP_REGISTRY.computer
 }
 
 function formatName(word = "") {
@@ -43,6 +45,8 @@ const remoteEnemyState = {
     ghosts: new Map(),
     lastSnapshotTs: null
 };
+
+const pendingRemoteAttacks = [];
 
 const nowMs = () =>
     typeof performance !== "undefined" && typeof performance.now === "function"
@@ -204,6 +208,17 @@ const init = async () => {
         emitMultiplayerEvent("structure:remove", { id: structure.id });
     }
 
+    function broadcastStructureUpgrade(structure) {
+        const payload = serializeStructure(structure);
+        if (!payload) {
+            return;
+        }
+        if (multiplayerInstance?.id) {
+            payload.sourceId = multiplayerInstance.id;
+        }
+        emitMultiplayerEvent("structure:update", payload);
+    }
+
     function broadcastResourceNodeUpdate(update) {
         if (!update?.nodeId) {
             return;
@@ -354,6 +369,18 @@ const init = async () => {
         markStructuresDirty({ bumpVersion: shouldBroadcastLater });
     }
 
+    function handleRemoteStructureUpgrade(payload) {
+        if (!payload?.id) {
+            return;
+        }
+        if (payload?.sourceId && multiplayerInstance?.id && payload.sourceId === multiplayerInstance.id) {
+            return;
+        }
+        structures.upsertStructureSnapshot(payload, { silent: true });
+        const shouldBroadcastLater = multiplayerState.isHost;
+        markStructuresDirty({ bumpVersion: shouldBroadcastLater });
+    }
+
     function handleRemoteResourceUpdate(payload) {
         if (!payload?.nodeId) {
             return;
@@ -378,8 +405,11 @@ const init = async () => {
         broadcastStructureRemoval(structure);
     };
 
-    structures.onStructureUpdated = () => {
-        markStructuresDirty({ bumpVersion: false });
+    structures.onStructureUpdated = (structure, meta = {}) => {
+        markStructuresDirty();
+        if (meta?.reason === "upgrade" && structure) {
+            broadcastStructureUpgrade(structure);
+        }
     };
 
     resources.onSnapshotReplaced = () => {
@@ -395,6 +425,7 @@ const init = async () => {
     function resetRemoteEnemyState(clearLocalEnemies = false) {
         remoteEnemyState.ghosts.clear();
         remoteEnemyState.lastSnapshotTs = null;
+        pendingRemoteAttacks.length = 0;
         if (clearLocalEnemies) {
             enemyWaves.enemies = [];
             enemyWaves.toSpawn = 0;
@@ -519,7 +550,9 @@ const init = async () => {
                 )
             );
             ghost.hitFlash = Math.max(0, (ghost.hitFlash ?? 0) - deltaSeconds);
-            if (Number.isFinite(ghost.attackCooldown)) {
+            if (!Number.isFinite(ghost.attackCooldown)) {
+                ghost.attackCooldown = 0;
+            } else {
                 ghost.attackCooldown = Math.max(0, ghost.attackCooldown - deltaSeconds);
             }
             if (duration <= 0) {
@@ -537,6 +570,284 @@ const init = async () => {
             updated.push(ghost);
         }
         enemyWaves.enemies = updated;
+    }
+
+    function simulateRemoteEnemyBehavior() {
+        updateRemoteEnemyVisuals();
+        if (!multiplayerState.lobbyId || multiplayerState.isHost) {
+            return { playerHits: [] };
+        }
+        const playerHits = applyGhostDamageToLocalPlayer();
+        return { playerHits };
+    }
+
+    function applyGhostDamageToLocalPlayer() {
+        if (gameState.phase !== "night") {
+            return [];
+        }
+        if (!player.isAlive()) {
+            return [];
+        }
+        const hits = [];
+        for (const ghost of remoteEnemyState.ghosts.values()) {
+            if (!ghost || ghost.alive === false) continue;
+            const cooldown = Number.isFinite(ghost.attackCooldown) ? ghost.attackCooldown : 0;
+            if (cooldown > 0) continue;
+            const attackRange = (Number.isFinite(ghost.radius) ? ghost.radius : 18) + (player.size ?? 0) / 2 + 4;
+            const dist = distance(ghost.position, player.position);
+            if (!Number.isFinite(dist)) continue;
+            if (dist <= attackRange) {
+                const incoming = Number.isFinite(ghost.damage) ? ghost.damage : 0;
+                if (incoming <= 0) {
+                    ghost.attackCooldown = ENEMY_STATS.damageInterval;
+                    continue;
+                }
+                const result = player.takeDamage(incoming);
+                ghost.attackCooldown = ENEMY_STATS.damageInterval;
+                hits.push({ enemy: ghost, damage: result.applied, killed: result.killed });
+            }
+        }
+        return hits;
+    }
+
+    function applyRemoteAttackResults(payload) {
+        if (!payload || !Array.isArray(payload.hits)) {
+            return;
+        }
+        const isLocalAttacker = payload.sourceId && multiplayerInstance && payload.sourceId === multiplayerInstance.id;
+        const displayHits = [];
+        for (const hit of payload.hits) {
+            const id = Number(hit.id ?? hit.enemyId);
+            if (!Number.isFinite(id)) continue;
+            const ghost = remoteEnemyState.ghosts.get(id);
+            if (!ghost) continue;
+            const damageApplied = Number.isFinite(hit.damage) ? hit.damage : 0;
+            if (Number.isFinite(hit.health)) {
+                ghost.health = Math.max(0, hit.health);
+            } else if (damageApplied > 0) {
+                const current = Number.isFinite(ghost.health) ? ghost.health : ghost.maxHealth ?? damageApplied;
+                ghost.health = Math.max(0, current - damageApplied);
+            }
+            if (Number.isFinite(hit.maxHealth)) {
+                ghost.maxHealth = hit.maxHealth;
+            }
+            ghost.hitFlash = 0.18;
+            const killed = Boolean(hit.killed) || ghost.health <= 0;
+            ghost.alive = !killed;
+            displayHits.push({ enemy: ghost, damage: damageApplied, killed });
+            if (killed) {
+                remoteEnemyState.ghosts.delete(id);
+            } else {
+                remoteEnemyState.ghosts.set(id, ghost);
+            }
+        }
+        enemyWaves.enemies = Array.from(remoteEnemyState.ghosts.values());
+        if (displayHits.length) {
+            for (const hit of displayHits) {
+                const damageValue = Math.round(hit.damage ?? 0);
+                if (damageValue > 0) {
+                    effects.spawnFloatingText({
+                        text: `-${damageValue}`,
+                        position: { ...hit.enemy.position },
+                        color: "#ffd166"
+                    });
+                }
+                if (hit.killed) {
+                    effects.spawnFloatingText({
+                        text: "Down!",
+                        position: { x: hit.enemy.position.x, y: hit.enemy.position.y - 26 },
+                        color: "#ff8ba7"
+                    });
+                }
+            }
+        }
+        if (isLocalAttacker && displayHits.length) {
+            const totalDamage = displayHits.reduce((sum, hit) => sum + Math.round(hit.damage ?? 0), 0);
+            if (totalDamage > 0) {
+                ui.showMessage(`Hit ${displayHits.length} enemy (${totalDamage} dmg)`, 1, "#ffd166");
+            } else {
+                ui.showMessage(`Attack connected`, 0.8, "#ffd166");
+            }
+        }
+    }
+
+    function applyDamageToEnemyInstance(enemy, amount) {
+        if (!enemy) {
+            return { applied: 0, killed: false };
+        }
+        const damageValue = Number.isFinite(amount) ? amount : 0;
+        if (damageValue <= 0) {
+            return { applied: 0, killed: false };
+        }
+        const before = Number.isFinite(enemy.health) ? enemy.health : null;
+        let killed = false;
+        if (typeof enemy.takeDamage === "function") {
+            killed = enemy.takeDamage(damageValue);
+        } else if (typeof enemy.health === "number") {
+            enemy.health = Math.max(0, enemy.health - damageValue);
+            killed = enemy.health <= 0;
+            if (killed) {
+                enemy.alive = false;
+            }
+        }
+        const after = Number.isFinite(enemy.health) ? enemy.health : before;
+        const applied = before !== null && after !== null ? Math.max(0, before - after) : damageValue;
+        if (!enemy.alive && !killed) {
+            killed = true;
+        }
+        return { applied, killed };
+    }
+
+    function resolveRemoteAttackRequest(request) {
+        if (!request) {
+            return null;
+        }
+        const { attackerId, enemyIds, damage } = request;
+        if (!Array.isArray(enemyIds) || enemyIds.length === 0) {
+            return null;
+        }
+        const damageValue = Number.isFinite(damage) ? damage : 0;
+        if (damageValue <= 0) {
+            return null;
+        }
+        const hits = [];
+        for (const rawId of enemyIds) {
+            const id = Number(rawId);
+            if (!Number.isFinite(id)) continue;
+            const enemy = enemyWaves.enemies.find((candidate) => candidate && candidate.id === id);
+            if (!enemy || !enemy.alive) continue;
+            const wasAlive = enemy.alive;
+            const result = applyDamageToEnemyInstance(enemy, damageValue);
+            if (result.applied <= 0) continue;
+
+            hits.push({
+                id: enemy.id,
+                damage: result.applied,
+                killed: !enemy.alive,
+                health: Number.isFinite(enemy.health) ? enemy.health : null,
+                maxHealth: Number.isFinite(enemy.maxHealth) ? enemy.maxHealth : null,
+                enemy
+            });
+
+            if (effects && result.applied > 0) {
+                effects.spawnFloatingText({
+                    text: `-${Math.round(result.applied)}`,
+                    position: { ...enemy.position },
+                    color: "#ffd166"
+                });
+                if (!enemy.alive) {
+                    effects.spawnFloatingText({
+                        text: "Down!",
+                        position: { x: enemy.position.x, y: enemy.position.y - 26 },
+                        color: "#ff8ba7"
+                    });
+                }
+            }
+
+            if (wasAlive && !enemy.alive) {
+                if (inventory && random() < 0.35) {
+                    const lootDrop = random() < 0.5
+                        ? {
+                            name: "Scrap",
+                            icon: "[S]",
+                            description: "Crafting scrap salvaged from raiders.",
+                            stackable: true,
+                            stackKey: "material:scrap",
+                            count: 1
+                        }
+                        : {
+                            name: "Fabric",
+                            icon: "[F]",
+                            description: "Useful for tailoring upgrades.",
+                            stackable: true,
+                            stackKey: "material:fabric",
+                            count: 1
+                        };
+                    if (inventory.addItem(lootDrop) && effects) {
+                        effects.spawnFloatingText({
+                            text: `Loot: ${lootDrop.name}`,
+                            position: { ...enemy.position },
+                            color: "#7be0a6"
+                        });
+                    }
+                }
+                if (effects) {
+                    effects.spawnFloatingText({
+                        text: "+1 wave XP",
+                        position: { ...enemy.position },
+                        color: "#ff8ba7"
+                    });
+                }
+            }
+        }
+
+        if (!hits.length) {
+            return null;
+        }
+
+        enemyWaves.enemies = enemyWaves.enemies.filter((enemy) => enemy.alive);
+        if (enemyWaves.toSpawn <= 0 && enemyWaves.enemies.length === 0) {
+            enemyWaves.active = false;
+        }
+
+        return {
+            attackerId,
+            hits: hits.map((hit) => ({
+                id: hit.id,
+                damage: hit.damage,
+                killed: hit.killed,
+                health: Number.isFinite(hit.health) ? hit.health : null,
+                maxHealth: Number.isFinite(hit.maxHealth) ? hit.maxHealth : null
+            }))
+        };
+    }
+
+    function processPendingRemoteAttacks() {
+        if (!multiplayerState.isHost || pendingRemoteAttacks.length === 0) {
+            return;
+        }
+        const outbound = [];
+        while (pendingRemoteAttacks.length) {
+            const request = pendingRemoteAttacks.shift();
+            const result = resolveRemoteAttackRequest(request);
+            if (result) {
+                outbound.push(result);
+            }
+        }
+        for (const result of outbound) {
+            if (!result.hits || result.hits.length === 0) continue;
+            emitMultiplayerEvent("combat:attackResult", {
+                sourceId: result.attackerId,
+                hits: result.hits
+            });
+        }
+    }
+
+    function handleRemoteAttack(attackerId, payload) {
+        if (!multiplayerState.isHost) {
+            return;
+        }
+        if (!attackerId || attackerId === multiplayerInstance?.id) {
+            return;
+        }
+        if (!payload) {
+            return;
+        }
+        const enemyIds = Array.isArray(payload.enemyIds)
+            ? payload.enemyIds.map((id) => Number(id)).filter((value) => Number.isFinite(value))
+            : [];
+        if (!enemyIds.length) {
+            return;
+        }
+        const damage = Number(payload.damage);
+        if (!Number.isFinite(damage) || damage <= 0) {
+            return;
+        }
+        pendingRemoteAttacks.push({
+            attackerId,
+            enemyIds,
+            damage
+        });
     }
     const loot = new LootManager(world, {
         lootQualityModifier: difficultySettings.lootQualityModifier,
@@ -561,6 +872,9 @@ const init = async () => {
     const mobileActionButtons = mobileControlsRoot ? Array.from(mobileControlsRoot.querySelectorAll(".mobile-button")) : [];
     const restartButton = document.getElementById("game-restart");
     const gameOverOverlay = document.getElementById("game-over-overlay");
+    const computerOverlay = document.getElementById("computer-overlay");
+    const computerCloseButton = document.getElementById("computer-close");
+    const computerFrame = document.getElementById("computer-frame");
     const startOverlay = document.getElementById("start-overlay");
     const startMenuPanel = document.getElementById("start-menu-panel");
     const startDifficultyPanel = document.getElementById("start-difficulty-panel");
@@ -938,12 +1252,15 @@ const init = async () => {
         playerDamageFlash: 0,
         selectedInventoryIndex: -1,
         berryHintShown: false,
-        worldSeed: defaultSeed
+        worldSeed: defaultSeed,
+        computerOverlayOpen: false
     };
 
 
     let lastCraftingMenuSignature = null;
     let pendingDifficultyIntent = "singleplayer";
+    let computerOverlayPrevPaused = false;
+    let computerOverlayReturnFocus = null;
 
     function showStartPanel(panelKey = "menu") {
         const key = startPanels[panelKey] ? panelKey : "menu";
@@ -1470,6 +1787,10 @@ const init = async () => {
             handleRemoteStructureRemoval(payload);
         });
 
+        multiplayerInstance.onEvent("structure:update", ({ payload }) => {
+            handleRemoteStructureUpgrade(payload);
+        });
+
         multiplayerInstance.onEvent("resource:update", ({ payload }) => {
             handleRemoteResourceUpdate(payload);
         });
@@ -1541,6 +1862,16 @@ const init = async () => {
                 chests: loot && Array.isArray(loot.chests) ? loot.chests.map((c) => ({ id: c.id, opened: !!c.opened })) : []
             };
         }
+
+        multiplayerInstance.onEvent("combat:attack", ({ payload, from }) => {
+            if (!multiplayerState.isHost) return;
+            handleRemoteAttack(from, payload);
+        });
+
+        multiplayerInstance.onEvent("combat:attackResult", ({ payload }) => {
+            if (multiplayerState.isHost) return;
+            applyRemoteAttackResults(payload);
+        });
 
         multiplayerInstance.onEvent("world:snapshot", ({ payload, from }) => {
             // Only apply if not host
@@ -1699,7 +2030,14 @@ const init = async () => {
             width: 120,
             height: 72,
             radius: 72
-        }
+        },
+        computerPlacement: {
+            width: 138,
+            height: 92,
+            interactRadius: 84,
+            clearance: 18
+        },
+        computers: []
     };
     const doorReachY = Math.max(
         houseInterior.door.position.y - 12,
@@ -1711,6 +2049,141 @@ const init = async () => {
         minY: houseInterior.wallThickness + 28,
         maxY: Math.min(doorReachY, houseInterior.height - 36)
     };
+
+    function getInteriorOffsets() {
+        return {
+            offsetX: Math.floor((CANVAS_WIDTH - houseInterior.width) / 2),
+            offsetY: Math.floor((CANVAS_HEIGHT - houseInterior.height) / 2)
+        };
+    }
+
+    function canvasToInteriorPosition(canvasX, canvasY) {
+        if (!Number.isFinite(canvasX) || !Number.isFinite(canvasY)) {
+            return null;
+        }
+        const { offsetX, offsetY } = getInteriorOffsets();
+        const hasComputerSelection = input.buildSelection === "computer";
+        const hasComputerKit = hasComputerSelection
+            ? (inventory?.hasStructureKit ? inventory.hasStructureKit("computer") : false)
+            : false;
+        return {
+            x: canvasX - offsetX,
+            y: canvasY - offsetY
+        };
+    }
+
+    function makeRect(position, width, height, padding = 0) {
+        return {
+            left: position.x - width / 2 - padding,
+            right: position.x + width / 2 + padding,
+            top: position.y - height / 2 - padding,
+            bottom: position.y + height / 2 + padding
+        };
+    }
+
+    function rectanglesOverlap(a, b) {
+        return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+    }
+
+    function isRectInsideInteriorBounds(rect) {
+        const bounds = houseInterior.bounds;
+        return rect.left >= bounds.minX
+            && rect.right <= bounds.maxX
+            && rect.top >= bounds.minY
+            && rect.bottom <= bounds.maxY;
+    }
+
+    function isInteriorComputerPlacementValid(position) {
+        if (!position) {
+            return false;
+        }
+        const placement = houseInterior.computerPlacement;
+        const clearance = placement.clearance ?? 0;
+        const rect = makeRect(position, placement.width, placement.height, clearance);
+        if (!isRectInsideInteriorBounds(rect)) {
+            return false;
+        }
+        for (const piece of houseInterior.furniture) {
+            const furnitureRect = {
+                left: piece.x - clearance,
+                right: piece.x + piece.width + clearance,
+                top: piece.y - clearance,
+                bottom: piece.y + piece.height + clearance
+            };
+            if (rectanglesOverlap(rect, furnitureRect)) {
+                return false;
+            }
+        }
+        const table = houseInterior.craftingTable;
+        if (table) {
+            const tableRect = makeRect(table.position, table.width, table.height, clearance + 8);
+            if (rectanglesOverlap(rect, tableRect)) {
+                return false;
+            }
+        }
+        for (const computer of houseInterior.computers) {
+            const existingRect = makeRect(computer.position, computer.width, computer.height, clearance);
+            if (rectanglesOverlap(rect, existingRect)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function clampInteriorPosition(position, width, height) {
+        const bounds = houseInterior.bounds;
+        const halfW = width / 2;
+        const halfH = height / 2;
+        return {
+            x: clamp(position.x, bounds.minX + halfW, bounds.maxX - halfW),
+            y: clamp(position.y, bounds.minY + halfH, bounds.maxY - halfH)
+        };
+    }
+
+    function findInteriorComputerNear(position, padding = 36) {
+        if (!position) {
+            return null;
+        }
+        for (const computer of houseInterior.computers) {
+            const halfW = computer.width / 2 + padding;
+            const halfH = computer.height / 2 + padding;
+            if (Math.abs(position.x - computer.position.x) <= halfW && Math.abs(position.y - computer.position.y) <= halfH) {
+                return computer;
+            }
+        }
+        return null;
+    }
+
+    function tryPlaceInteriorComputer(position) {
+        if (!position) {
+            return { success: false, reason: "Invalid placement" };
+        }
+        if (!inventory?.hasStructureKit || !inventory?.consumeStructureKit) {
+            return { success: false, reason: "Cannot use kits right now." };
+        }
+        if (!inventory.hasStructureKit("computer")) {
+            return { success: false, reason: "Requires a computer kit." };
+        }
+        if (!isInteriorComputerPlacementValid(position)) {
+            return { success: false, reason: "Not enough space for the computer." };
+        }
+        const consumed = inventory.consumeStructureKit("computer");
+        if (!consumed) {
+            return { success: false, reason: "Computer kit missing." };
+        }
+        const placement = houseInterior.computerPlacement;
+        const computer = {
+            id: `computer-${Date.now().toString(36)}-${Math.floor(Math.random() * 4096)}`,
+            position: {
+                x: Math.round(position.x),
+                y: Math.round(position.y)
+            },
+            width: placement.width,
+            height: placement.height
+        };
+        houseInterior.computers.push(computer);
+        return { success: true, computer };
+    }
 
     const interiorState = {
         position: { ...houseInterior.spawn },
@@ -1752,6 +2225,19 @@ const init = async () => {
     if (restartButton) {
         restartButton.addEventListener("click", () => {
             window.location.reload();
+        });
+    }
+    if (computerCloseButton) {
+        computerCloseButton.addEventListener("click", () => {
+            closeComputerOverlay();
+        });
+    }
+    if (computerOverlay) {
+        computerOverlay.addEventListener("click", (event) => {
+            const target = event.target;
+            if (target === computerOverlay || (target instanceof Element && target.classList.contains("computer-overlay__backdrop"))) {
+                closeComputerOverlay();
+            }
         });
     }
 
@@ -2499,6 +2985,11 @@ function handleInventoryReorder(details) {
         input.pauseToggle = false;
         input.cancelPlacement = false;
 
+        if (gameState.computerOverlayOpen) {
+            closeComputerOverlay();
+            return;
+        }
+
         if (gameState.settingsOpen) {
             closeSettings();
             if (!gameState.pauseMenuOpen) {
@@ -2804,6 +3295,7 @@ function handleInventoryReorder(details) {
         player.position.x = target.x;
         player.position.y = target.y;
         closeCraftingMenu();
+        closeComputerOverlay({ restoreFocus: false });
         gameState.inHouse = false;
         gameState.outsideReturnPosition = null;
         ui.showMessage("Back outside.", 1.4, "#d5dde8");
@@ -2909,6 +3401,46 @@ function closeCraftingMenu() {
     lastCraftingMenuSignature = null;
 }
 
+function openComputerOverlay() {
+    if (!computerOverlay || gameState.computerOverlayOpen) {
+        return;
+    }
+    computerOverlayPrevPaused = gameState.paused;
+    computerOverlayReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    gameState.computerOverlayOpen = true;
+    computerOverlay.classList.add("open");
+    computerOverlay.setAttribute("aria-hidden", "false");
+    if (!computerOverlayPrevPaused) {
+        gameState.paused = true;
+        updatePauseButtonState();
+    }
+    if (computerCloseButton) {
+        computerCloseButton.focus({ preventScroll: true });
+    }
+}
+
+function closeComputerOverlay(options = {}) {
+    if (!computerOverlay || !gameState.computerOverlayOpen) {
+        return;
+    }
+    computerOverlay.classList.remove("open");
+    computerOverlay.setAttribute("aria-hidden", "true");
+    gameState.computerOverlayOpen = false;
+    if (!computerOverlayPrevPaused) {
+        gameState.paused = false;
+        updatePauseButtonState();
+    }
+    if (options.restoreFocus !== false) {
+        const target = computerOverlayReturnFocus && computerOverlayReturnFocus.isConnected
+            ? computerOverlayReturnFocus
+            : canvas;
+        if (target && typeof target.focus === "function") {
+            target.focus({ preventScroll: true });
+        }
+    }
+    computerOverlayReturnFocus = null;
+}
+
 function attemptCraftStructure(typeKey) {
     const blueprint = STRUCTURE_TYPES[typeKey];
     if (!blueprint) {
@@ -2961,6 +3493,23 @@ function attemptCraftStructure(typeKey) {
 
 
 function handleInput(deltaSeconds) {
+    if (gameState.computerOverlayOpen) {
+        if (input.pauseToggle || input.cancelPlacement || input.interact) {
+            closeComputerOverlay();
+        }
+        input.pauseToggle = false;
+        input.cancelPlacement = false;
+        input.interact = false;
+        input.attack = false;
+        input.upgrade = false;
+        input.inventoryToggle = false;
+        input.hotbarSelect = null;
+        input.hotbarScroll = 0;
+        input.consumeBerries = false;
+        input.mouse.clicked = false;
+        return;
+    }
+
     if (input.hotbarSelect !== null) {
         const targetIndex = input.hotbarSelect;
         const items = inventory.getItems();
@@ -3004,10 +3553,50 @@ function handleInput(deltaSeconds) {
 
     if (gameState.inHouse) {
         updateHouseInteriorMovement(deltaSeconds);
+
+        const pointerInterior = canvasToInteriorPosition(input.mouse.worldX, input.mouse.worldY);
+        const placementSpec = houseInterior.computerPlacement;
+        const hasComputerSelection = input.buildSelection === "computer";
+
+        if (hasComputerSelection && input.mouse.clicked) {
+            let placementPosition = null;
+            if (pointerInterior) {
+                const tentativeRect = makeRect(pointerInterior, placementSpec.width, placementSpec.height, 0);
+                const withinBounds = isRectInsideInteriorBounds(tentativeRect);
+                placementPosition = withinBounds
+                    ? pointerInterior
+                    : clampInteriorPosition(pointerInterior, placementSpec.width, placementSpec.height);
+                if (!withinBounds && !isRectInsideInteriorBounds(makeRect(placementPosition, placementSpec.width, placementSpec.height, 0))) {
+                    placementPosition = null;
+                }
+            }
+            if (!placementPosition) {
+                ui.showMessage("Step further inside to place the computer.", 1.4, "#ff8888");
+            } else {
+                const result = tryPlaceInteriorComputer(placementPosition);
+                if (result.success) {
+                    ui.showMessage("Computer installed inside the house.", 1.6, "#7be0a6");
+                    if (!inventory?.hasStructureKit || !inventory.hasStructureKit("computer")) {
+                        input.buildSelection = null;
+                        gameState.currentBuildSelection = null;
+                    }
+                    refreshResourceUI();
+                } else if (result.reason) {
+                    ui.showMessage(result.reason, 1.4, "#ff8888");
+                }
+            }
+            input.mouse.clicked = false;
+        } else if (input.mouse.clicked) {
+            input.mouse.clicked = false;
+        }
+
         if (input.interact) {
+            const nearbyComputer = findInteriorComputerNear(interiorState.position);
             const nearTable = isInsideCraftingZone(interiorState.position);
             const nearDoor = isInsideDoorZone(interiorState.position);
-            if (nearTable) {
+            if (nearbyComputer) {
+                openComputerOverlay();
+            } else if (nearTable) {
                 openCraftingMenu();
             } else if (nearDoor) {
                 exitHouse();
@@ -3022,7 +3611,7 @@ function handleInput(deltaSeconds) {
         if (input.attack) {
             input.attack = false;
         }
-        if (input.buildSelection) {
+        if (input.buildSelection && input.buildSelection !== "computer") {
             input.buildSelection = null;
             gameState.currentBuildSelection = null;
             refreshResourceUI();
@@ -3241,24 +3830,40 @@ function handleInput(deltaSeconds) {
     }
 
     if (input.attack && player.canAttack()) {
-        const hits = player.performAttack(enemyWaves.enemies);
-        if (hits.length > 0) {
-            hits.forEach((hit) => {
-                const damageText = `-${hit.damage}`;
-                effects.spawnFloatingText({
-                    text: damageText,
-                    position: { ...hit.enemy.position },
-                    color: "#ffd166"
-                });
-                if (hit.killed) {
-                    effects.spawnFloatingText({
-                        text: "Down!",
-                        position: { x: hit.enemy.position.x, y: hit.enemy.position.y - 26 },
-                        color: "#ff8ba7"
+        if (multiplayerState.lobbyId && !multiplayerState.isHost && multiplayerInstance) {
+            const targets = player.collectAttackTargets(enemyWaves.enemies);
+            player.applyAttackAnimation(targets.length);
+            if (targets.length) {
+                const enemyIds = targets
+                    .map((enemy) => Number.isFinite(enemy?.id) ? enemy.id : null)
+                    .filter((id) => Number.isFinite(id));
+                if (enemyIds.length) {
+                    emitMultiplayerEvent("combat:attack", {
+                        enemyIds,
+                        damage: player.getAttackDamage()
                     });
                 }
-            });
-            ui.showMessage(`Hit ${hits.length} enemy (${player.getAttackDamage()} dmg)`, 1, "#ffd166");
+            }
+        } else {
+            const hits = player.performAttack(enemyWaves.enemies);
+            if (hits.length > 0) {
+                hits.forEach((hit) => {
+                    const damageText = `-${hit.damage}`;
+                    effects.spawnFloatingText({
+                        text: damageText,
+                        position: { ...hit.enemy.position },
+                        color: "#ffd166"
+                    });
+                    if (hit.killed) {
+                        effects.spawnFloatingText({
+                            text: "Down!",
+                            position: { x: hit.enemy.position.x, y: hit.enemy.position.y - 26 },
+                            color: "#ff8ba7"
+                        });
+                    }
+                });
+                ui.showMessage(`Hit ${hits.length} enemy (${player.getAttackDamage()} dmg)`, 1, "#ffd166");
+            }
         }
         input.attack = false;
     }
@@ -3273,6 +3878,11 @@ function handleInput(deltaSeconds) {
 
     if (input.buildSelection && input.mouse.clicked && !gameState.inventoryOpen && !gameState.craftingOpen && !gameState.inHouse) {
         const typeKey = input.buildSelection;
+        if (typeKey === "computer") {
+            ui.showMessage("Computers must be installed inside the house.", 1.6, "#ff8888");
+            input.mouse.clicked = false;
+            return;
+        }
         const blueprint = STRUCTURE_TYPES[typeKey];
         if (blueprint) {
             const position = { x: input.mouse.worldX, y: input.mouse.worldY };
@@ -3326,18 +3936,19 @@ function updateGame(deltaSeconds) {
         // Run enemy spawning/updates when in singleplayer (no lobby) or when this client is the host.
         // If connected to a multiplayer lobby and not the host, skip authoritative enemy updates.
         const shouldRunEnemies = !multiplayerState.lobbyId || multiplayerState.isHost || !multiplayerInstance;
-        const waveEvents = shouldRunEnemies
+        const enemyEvents = shouldRunEnemies
             ? enemyWaves.update(deltaSeconds, world, structures, inventory, effects, player, gameState.phase === "night")
-            : { playerHits: [] };
-        if (!shouldRunEnemies) {
-            updateRemoteEnemyVisuals();
+            : simulateRemoteEnemyBehavior();
+        if (shouldRunEnemies) {
+            processPendingRemoteAttacks();
         }
         structures.update(deltaSeconds, enemyWaves.enemies, effects);
         effects.update(deltaSeconds);
 
-        if (waveEvents?.playerHits?.length) {
+        const playerHits = enemyEvents?.playerHits ?? [];
+        if (playerHits.length) {
             let totalDamage = 0;
-            for (const hit of waveEvents.playerHits) {
+            for (const hit of playerHits) {
                 const damage = Math.round(hit.damage ?? 0);
                 totalDamage += damage;
                 if (damage > 0) {
@@ -3391,6 +4002,7 @@ function updateGame(deltaSeconds) {
 
     function drawBuildGhost() {
         if (!input.buildSelection || gameState.inventoryOpen || gameState.craftingOpen || gameState.inHouse) return;
+        if (input.buildSelection === "computer") return;
         const blueprint = STRUCTURE_TYPES[input.buildSelection];
         if (!blueprint) return;
         const position = { x: input.mouse.worldX, y: input.mouse.worldY };
@@ -3530,8 +4142,7 @@ function updateGame(deltaSeconds) {
         ctx.fillStyle = "#101720";
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-        const offsetX = Math.floor((CANVAS_WIDTH - houseInterior.width) / 2);
-        const offsetY = Math.floor((CANVAS_HEIGHT - houseInterior.height) / 2);
+        const { offsetX, offsetY } = getInteriorOffsets();
 
         ctx.fillStyle = houseInterior.wallColor;
         ctx.fillRect(offsetX, offsetY, houseInterior.width, houseInterior.height);
@@ -3552,6 +4163,63 @@ function updateGame(deltaSeconds) {
         for (const piece of houseInterior.furniture) {
             ctx.fillStyle = piece.color;
             ctx.fillRect(offsetX + piece.x, offsetY + piece.y, piece.width, piece.height);
+        }
+
+        const activeComputer = findInteriorComputerNear(interiorState.position, 28);
+        for (const computer of houseInterior.computers) {
+            const drawX = offsetX + computer.position.x;
+            const drawY = offsetY + computer.position.y;
+            const isActive = Boolean(activeComputer && activeComputer.id === computer.id);
+            const width = computer.width;
+            const height = computer.height;
+            ctx.save();
+            ctx.translate(drawX, drawY);
+            ctx.fillStyle = "#1d2735";
+            ctx.fillRect(-width / 2, -height / 2, width, height);
+            ctx.fillStyle = isActive && !gameState.computerOverlayOpen ? "#3aa0ff" : "#0a84ff";
+            ctx.fillRect(-width / 2 + 22, -height / 2 + 18, width - 44, height / 2.15);
+            ctx.fillStyle = "#0b111a";
+            ctx.fillRect(-width / 2 + 18, height / 2 - 36, width - 36, 18);
+            ctx.fillStyle = "#151f2d";
+            ctx.fillRect(-width / 2 + 12, height / 2 - 14, width - 24, 12);
+            ctx.restore();
+            if (isActive && !gameState.computerOverlayOpen) {
+                ctx.save();
+                ctx.strokeStyle = "rgba(47, 155, 255, 0.5)";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.ellipse(drawX, drawY + computer.height / 3.2, computer.width / 1.9, computer.height / 2.4, 0, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        if (hasComputerSelection) {
+            const placement = houseInterior.computerPlacement;
+            const pointer = canvasToInteriorPosition(input.mouse.worldX, input.mouse.worldY);
+            if (pointer) {
+                const pointerRect = makeRect(pointer, placement.width, placement.height, 0);
+                const pointerInside = isRectInsideInteriorBounds(pointerRect);
+                let displayPosition = pointerInside
+                    ? pointer
+                    : clampInteriorPosition(pointer, placement.width, placement.height);
+                if (!isRectInsideInteriorBounds(makeRect(displayPosition, placement.width, placement.height, 0))) {
+                    displayPosition = null;
+                }
+                if (displayPosition) {
+                    const valid = hasComputerKit && isInteriorComputerPlacementValid(displayPosition);
+                    const screenX = offsetX + displayPosition.x;
+                    const screenY = offsetY + displayPosition.y;
+                    ctx.save();
+                    ctx.globalAlpha = 0.46;
+                    ctx.translate(screenX, screenY);
+                    ctx.fillStyle = valid ? "#8be78b" : "#ff6b6b";
+                    ctx.fillRect(-placement.width / 2, -placement.height / 2, placement.width, placement.height);
+                    ctx.fillStyle = valid ? "rgba(10, 132, 255, 0.45)" : "rgba(255, 107, 107, 0.4)";
+                    ctx.fillRect(-placement.width / 2 + 22, -placement.height / 2 + 18, placement.width - 44, placement.height / 2.15);
+                    ctx.restore();
+                }
+            }
         }
 
         const table = houseInterior.craftingTable;
@@ -3581,6 +4249,18 @@ function updateGame(deltaSeconds) {
             ctx.fillText("Press E to craft", tableX + table.width / 2, tableY - 32);
         }
         ctx.restore();
+
+        if (!gameState.craftingOpen && !gameState.computerOverlayOpen && activeComputer) {
+            const compX = offsetX + activeComputer.position.x;
+            const compY = offsetY + activeComputer.position.y;
+            ctx.fillStyle = "rgba(12, 18, 26, 0.6)";
+            ctx.fillRect(compX - 112, compY - activeComputer.height / 2 - 60, 224, 32);
+            ctx.fillStyle = "#e9efff";
+            ctx.font = "17px Segoe UI";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("Press E to use computer", compX, compY - activeComputer.height / 2 - 44);
+        }
 
         const door = houseInterior.door;
         const doorX = offsetX + door.position.x - door.width / 2;

@@ -49,6 +49,14 @@ export const STRUCTURE_TYPES = {
         range: 240,
         fireRate: 1.25,
         damage: 14
+    },
+    computer: {
+        key: "computer",
+        cost: { metal: 500 },
+        maxHp: 60,
+        size: 68,
+        color: "#2c3748",
+        indoorOnly: true
     }
 };
 

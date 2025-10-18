@@ -86,6 +86,9 @@ export class StructureManager {
     attemptPlacement(typeKey, position, inventory, rotation = 0) {
         const blueprint = STRUCTURE_TYPES[typeKey];
         if (!blueprint) return { success: false, reason: "Unknown structure" };
+        if (blueprint.indoorOnly) {
+            return { success: false, reason: "Must be installed indoors" };
+        }
 
         if (!this.isPlacementValid(typeKey, position)) {
             return { success: false, reason: "Invalid placement" };
@@ -120,6 +123,9 @@ export class StructureManager {
         if (structure.typeKey === "spike") {
             structure.stats.dps = Math.round(structure.stats.dps * 1.2);
         }
+        if (typeof this.onStructureUpdated === "function") {
+            this.onStructureUpdated(structure, { reason: "upgrade" });
+        }
         return { success: true };
     }
 
@@ -143,7 +149,7 @@ export class StructureManager {
             return true;
         }
         if (typeof this.onStructureUpdated === "function") {
-            this.onStructureUpdated(target);
+            this.onStructureUpdated(target, { reason: "damage" });
         }
         return false;
     }
@@ -298,7 +304,7 @@ export class StructureManager {
                 target.stats = { ...target.stats, ...stats };
             }
             if (!options.silent && typeof this.onStructureUpdated === "function") {
-                this.onStructureUpdated(target);
+                this.onStructureUpdated(target, { reason: "snapshot" });
             }
             return target;
         }
