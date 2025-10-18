@@ -4154,6 +4154,10 @@ function updateGame(deltaSeconds) {
         ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
         const { offsetX, offsetY } = getInteriorOffsets();
+        const hasComputerSelection = input.buildSelection === "computer";
+        const hasComputerKit = hasComputerSelection && typeof inventory?.hasStructureKit === "function"
+            ? inventory.hasStructureKit("computer")
+            : false;
 
         ctx.fillStyle = houseInterior.wallColor;
         ctx.fillRect(offsetX, offsetY, houseInterior.width, houseInterior.height);
