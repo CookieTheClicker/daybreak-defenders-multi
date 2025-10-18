@@ -2047,10 +2047,11 @@ const init = async () => {
             radius: 72
         },
         computerPlacement: {
-            width: 138,
-            height: 92,
+            width: 120,
+            height: 72,
             interactRadius: 84,
-            clearance: 18
+            clearance: 8,
+            snapMargin: 28
         },
         computers: []
     };
@@ -2165,6 +2166,69 @@ const init = async () => {
         return null;
     }
 
+    function getPreferredComputerLocations() {
+        const placement = houseInterior.computerPlacement;
+        const margin = Number.isFinite(placement.snapMargin) ? placement.snapMargin : 28;
+        const spots = [
+            {
+                x: houseInterior.bounds.maxX - placement.width / 2 - margin,
+                y: houseInterior.bounds.minY + placement.height / 2 + margin
+            },
+            {
+                x: houseInterior.bounds.maxX - placement.width / 2 - margin,
+                y: houseInterior.bounds.maxY - placement.height / 2 - margin
+            },
+            {
+                x: houseInterior.bounds.minX + placement.width / 2 + margin,
+                y: houseInterior.bounds.maxY - placement.height / 2 - margin
+            },
+            {
+                x: houseInterior.bounds.minX + placement.width / 2 + margin,
+                y: houseInterior.bounds.minY + placement.height / 2 + margin
+            }
+        ];
+        return spots.map((spot) => clampInteriorPosition(spot, placement.width, placement.height));
+    }
+
+    function findNearestValidComputerPosition(target = null) {
+        const placement = houseInterior.computerPlacement;
+        const tested = new Set();
+        const candidates = [];
+
+        if (target) {
+            candidates.push(clampInteriorPosition(target, placement.width, placement.height));
+        }
+
+        candidates.push(...getPreferredComputerLocations());
+
+        if (target) {
+            for (let radius = 16; radius <= 160; radius += 16) {
+                for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 4) {
+                    const candidate = {
+                        x: target.x + Math.cos(angle) * radius,
+                        y: target.y + Math.sin(angle) * radius
+                    };
+                    candidates.push(clampInteriorPosition(candidate, placement.width, placement.height));
+                }
+            }
+        }
+
+        for (const candidate of candidates) {
+            if (!candidate) {
+                continue;
+            }
+            const key = `${Math.round(candidate.x)}:${Math.round(candidate.y)}`;
+            if (tested.has(key)) {
+                continue;
+            }
+            tested.add(key);
+            if (isInteriorComputerPlacementValid(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     function tryPlaceInteriorComputer(position) {
         if (!position) {
             return { success: false, reason: "Invalid placement" };
@@ -2175,7 +2239,14 @@ const init = async () => {
         if (!inventory.hasStructureKit("computer")) {
             return { success: false, reason: "Requires a computer kit." };
         }
-        if (!isInteriorComputerPlacementValid(position)) {
+        let targetPosition = position;
+        if (!isInteriorComputerPlacementValid(targetPosition)) {
+            targetPosition = findNearestValidComputerPosition(position);
+        }
+        if (!targetPosition) {
+            return { success: false, reason: "Not enough space for the computer." };
+        }
+        if (!isInteriorComputerPlacementValid(targetPosition)) {
             return { success: false, reason: "Not enough space for the computer." };
         }
         const consumed = inventory.consumeStructureKit("computer");
@@ -2186,8 +2257,8 @@ const init = async () => {
         const computer = {
             id: `computer-${Date.now().toString(36)}-${Math.floor(Math.random() * 4096)}`,
             position: {
-                x: Math.round(position.x),
-                y: Math.round(position.y)
+                x: Math.round(targetPosition.x),
+                y: Math.round(targetPosition.y)
             },
             width: placement.width,
             height: placement.height
@@ -3570,31 +3641,17 @@ function handleInput(deltaSeconds) {
         const hasComputerSelection = input.buildSelection === "computer";
 
         if (hasComputerSelection && input.mouse.clicked) {
-            let placementPosition = null;
-            if (pointerInterior) {
-                const tentativeRect = makeRect(pointerInterior, placementSpec.width, placementSpec.height, 0);
-                const withinBounds = isRectInsideInteriorBounds(tentativeRect);
-                placementPosition = withinBounds
-                    ? pointerInterior
-                    : clampInteriorPosition(pointerInterior, placementSpec.width, placementSpec.height);
-                if (!withinBounds && !isRectInsideInteriorBounds(makeRect(placementPosition, placementSpec.width, placementSpec.height, 0))) {
-                    placementPosition = null;
+            const targetInterior = pointerInterior ?? interiorState.position;
+            const result = tryPlaceInteriorComputer(targetInterior);
+            if (result.success) {
+                ui.showMessage("Computer installed inside the house.", 1.6, "#7be0a6");
+                if (!inventory?.hasStructureKit || !inventory.hasStructureKit("computer")) {
+                    input.buildSelection = null;
+                    gameState.currentBuildSelection = null;
                 }
-            }
-            if (!placementPosition) {
-                ui.showMessage("Step further inside to place the computer.", 1.4, "#ff8888");
-            } else {
-                const result = tryPlaceInteriorComputer(placementPosition);
-                if (result.success) {
-                    ui.showMessage("Computer installed inside the house.", 1.6, "#7be0a6");
-                    if (!inventory?.hasStructureKit || !inventory.hasStructureKit("computer")) {
-                        input.buildSelection = null;
-                        gameState.currentBuildSelection = null;
-                    }
-                    refreshResourceUI();
-                } else if (result.reason) {
-                    ui.showMessage(result.reason, 1.4, "#ff8888");
-                }
+                refreshResourceUI();
+            } else if (result.reason) {
+                ui.showMessage(result.reason, 1.4, "#ff8888");
             }
             input.mouse.clicked = false;
         } else if (input.mouse.clicked) {
@@ -4212,28 +4269,43 @@ function updateGame(deltaSeconds) {
         if (hasComputerSelection) {
             const placement = houseInterior.computerPlacement;
             const pointer = canvasToInteriorPosition(input.mouse.worldX, input.mouse.worldY);
+            let displayPosition = null;
+            let usingFallback = false;
             if (pointer) {
                 const pointerRect = makeRect(pointer, placement.width, placement.height, 0);
                 const pointerInside = isRectInsideInteriorBounds(pointerRect);
-                let displayPosition = pointerInside
+                const candidate = pointerInside
                     ? pointer
                     : clampInteriorPosition(pointer, placement.width, placement.height);
-                if (!isRectInsideInteriorBounds(makeRect(displayPosition, placement.width, placement.height, 0))) {
-                    displayPosition = null;
+                if (isRectInsideInteriorBounds(makeRect(candidate, placement.width, placement.height, 0))) {
+                    displayPosition = candidate;
                 }
-                if (displayPosition) {
-                    const valid = hasComputerKit && isInteriorComputerPlacementValid(displayPosition);
-                    const screenX = offsetX + displayPosition.x;
-                    const screenY = offsetY + displayPosition.y;
-                    ctx.save();
-                    ctx.globalAlpha = 0.46;
-                    ctx.translate(screenX, screenY);
-                    ctx.fillStyle = valid ? "#8be78b" : "#ff6b6b";
-                    ctx.fillRect(-placement.width / 2, -placement.height / 2, placement.width, placement.height);
-                    ctx.fillStyle = valid ? "rgba(10, 132, 255, 0.45)" : "rgba(255, 107, 107, 0.4)";
-                    ctx.fillRect(-placement.width / 2 + 22, -placement.height / 2 + 18, placement.width - 44, placement.height / 2.15);
-                    ctx.restore();
+            }
+            if (!displayPosition) {
+                const fallback = findNearestValidComputerPosition(pointer ?? interiorState.position);
+                if (fallback) {
+                    displayPosition = fallback;
+                    usingFallback = true;
                 }
+            }
+            if (displayPosition) {
+                const placementValid = isInteriorComputerPlacementValid(displayPosition);
+                const kitReady = hasComputerKit && placementValid;
+                const screenX = offsetX + displayPosition.x;
+                const screenY = offsetY + displayPosition.y;
+                let fillColor = kitReady ? "#8be78b" : "#ff6b6b";
+                if (usingFallback && kitReady) {
+                    fillColor = "#f5d67d";
+                }
+                const detailColor = kitReady ? "rgba(10, 132, 255, 0.45)" : "rgba(255, 107, 107, 0.4)";
+                ctx.save();
+                ctx.globalAlpha = 0.46;
+                ctx.translate(screenX, screenY);
+                ctx.fillStyle = fillColor;
+                ctx.fillRect(-placement.width / 2, -placement.height / 2, placement.width, placement.height);
+                ctx.fillStyle = detailColor;
+                ctx.fillRect(-placement.width / 2 + 22, -placement.height / 2 + 18, placement.width - 44, placement.height / 2.15);
+                ctx.restore();
             }
         }
 
