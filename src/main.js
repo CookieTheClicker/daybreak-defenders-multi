@@ -1264,6 +1264,8 @@ const init = async () => {
 
     function showStartPanel(panelKey = "menu") {
         const key = startPanels[panelKey] ? panelKey : "menu";
+        const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        let focusTarget = null;
         Object.entries(startPanels).forEach(([candidate, panel]) => {
             if (!panel) return;
             const hidden = candidate !== key;
@@ -1271,11 +1273,24 @@ const init = async () => {
             if (hidden) {
                 panel.setAttribute("aria-hidden", "true");
                 panel.setAttribute("inert", "");
+                if (activeElement && panel.contains(activeElement)) {
+                    activeElement.blur();
+                }
             } else {
                 panel.setAttribute("aria-hidden", "false");
                 panel.removeAttribute("inert");
+                if (!focusTarget) {
+                    focusTarget = panel.querySelector("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+                }
             }
         });
+        if (focusTarget instanceof HTMLElement) {
+            focusTarget.focus({ preventScroll: true });
+        } else if (startOverlay && typeof startOverlay.focus === "function") {
+            startOverlay.focus({ preventScroll: true });
+        } else if (canvas && typeof canvas.focus === "function") {
+            canvas.focus({ preventScroll: true });
+        }
     }
 
     showStartPanel("menu");
@@ -2062,10 +2077,6 @@ const init = async () => {
             return null;
         }
         const { offsetX, offsetY } = getInteriorOffsets();
-        const hasComputerSelection = input.buildSelection === "computer";
-        const hasComputerKit = hasComputerSelection
-            ? (inventory?.hasStructureKit ? inventory.hasStructureKit("computer") : false)
-            : false;
         return {
             x: canvasX - offsetX,
             y: canvasY - offsetY
