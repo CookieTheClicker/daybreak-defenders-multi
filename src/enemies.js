@@ -3,6 +3,14 @@ import { distance } from "./utils.js";
 import { getAsset } from "./assets.js";
 import { random } from "./rng.js";
 
+let enemyIdCounter = 1;
+
+function generateEnemyId() {
+    const id = enemyIdCounter;
+    enemyIdCounter = id >= Number.MAX_SAFE_INTEGER ? 1 : id + 1;
+    return id;
+}
+
 const BASE_SPAWN_RADIUS = WORLD_SETTINGS.resourceRadius + 260;
 const SPAWN_RADIUS_PER_EXPANSION = 120;
 const SPAWN_MARGIN = 48;
@@ -112,6 +120,7 @@ export function drawEnemySprite(ctx, camera, enemyLike) {
 
 export class Enemy {
     constructor(waveNumber, modifiers = {}, world = null) {
+        this.id = generateEnemyId();
         this.position = randomSpawnPosition(world);
         this.radius = 18;
         const healthMultiplier = modifiers.healthMultiplier ?? 1;

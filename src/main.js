@@ -36,24 +36,18 @@ function formatName(word = "") {
     return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
-function hydrateEnemySnapshot(snapshot) {
-    if (!snapshot) {
-        return null;
-    }
-    const enemy = {
-        position: { x: 0, y: 0 },
-        radius: 18,
-        maxHealth: 1,
-        health: 1,
-        ...snapshot
-    };
-    enemy.position = {
-        x: Number.isFinite(enemy.position?.x) ? enemy.position.x : 0,
-        y: Number.isFinite(enemy.position?.y) ? enemy.position.y : 0
-    };
-    enemy.draw = (ctx, camera) => drawEnemySprite(ctx, camera, enemy);
-    return enemy;
-}
+const REMOTE_ENEMY_INTERP_MIN_MS = 120;
+const REMOTE_ENEMY_INTERP_MAX_MS = 900;
+
+const remoteEnemyState = {
+    ghosts: new Map(),
+    lastSnapshotTs: null
+};
+
+const nowMs = () =>
+    typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
 
 const init = async () => {
     await loadAssets();
@@ -321,10 +315,13 @@ const init = async () => {
 
         // If host provides enemy list snapshot, replace local enemies to match host.
         if (Array.isArray(hostState.enemies)) {
-            // Hydrate host-provided enemy snapshots so clients can render full sprites without running enemy logic.
-            enemyWaves.enemies = hostState.enemies
-                .map((snapshot) => hydrateEnemySnapshot(snapshot))
-                .filter(Boolean);
+            if (multiplayerState.lobbyId && !multiplayerState.isHost) {
+                syncRemoteEnemiesFromHostSnapshots(hostState.enemies);
+            } else {
+                enemyWaves.enemies = hostState.enemies.map((e) => ({ ...(e || {}) }));
+            }
+        } else if (multiplayerState.lobbyId && !multiplayerState.isHost) {
+            syncRemoteEnemiesFromHostSnapshots([]);
         }
         if (typeof hostState.enemiesActive === "boolean") {
             enemyWaves.active = !!hostState.enemiesActive;
@@ -393,6 +390,154 @@ const init = async () => {
     markStructuresDirty({ bumpVersion: false });
     markResourcesDirty({ bumpVersion: false });
     const enemyWaves = new EnemyWaveManager(difficultySettings);
+    resetRemoteEnemyState();
+
+    function resetRemoteEnemyState(clearLocalEnemies = false) {
+        remoteEnemyState.ghosts.clear();
+        remoteEnemyState.lastSnapshotTs = null;
+        if (clearLocalEnemies) {
+            enemyWaves.enemies = [];
+            enemyWaves.toSpawn = 0;
+            enemyWaves.active = false;
+        }
+    }
+
+    function ensureRemoteEnemyGhost(snapshot, timestamp, lerpDurationMs) {
+        if (!snapshot) {
+            return null;
+        }
+        const id = Number.isFinite(snapshot.id) ? snapshot.id : null;
+        if (id === null) {
+            return null;
+        }
+        const position = {
+            x: Number.isFinite(snapshot.position?.x) ? snapshot.position.x : 0,
+            y: Number.isFinite(snapshot.position?.y) ? snapshot.position.y : 0
+        };
+        let ghost = remoteEnemyState.ghosts.get(id);
+        if (!ghost) {
+            ghost = {
+                id,
+                position: { ...position },
+                lastPosition: { ...position },
+                targetPosition: { ...position },
+                snapshotTime: timestamp,
+                targetTime: timestamp + lerpDurationMs,
+                radius: Number.isFinite(snapshot.radius) ? snapshot.radius : 18,
+                maxHealth: Number.isFinite(snapshot.maxHealth) ? snapshot.maxHealth : (Number.isFinite(snapshot.health) ? snapshot.health : 1),
+                health: Number.isFinite(snapshot.health) ? snapshot.health : (Number.isFinite(snapshot.maxHealth) ? snapshot.maxHealth : 1),
+                speed: Number.isFinite(snapshot.speed) ? snapshot.speed : 0,
+                damage: Number.isFinite(snapshot.damage) ? snapshot.damage : 0,
+                alive: snapshot.alive !== false,
+                attackCooldown: Number.isFinite(snapshot.attackCooldown) ? snapshot.attackCooldown : 0,
+                waveNumber: Number.isFinite(snapshot.waveNumber) ? snapshot.waveNumber : 0,
+                hitFlash: Number.isFinite(snapshot.hitFlash) ? snapshot.hitFlash : 0,
+                __lastVisualUpdate: timestamp,
+                draw(ctx, camera) {
+                    drawEnemySprite(ctx, camera, ghost);
+                }
+            };
+            remoteEnemyState.ghosts.set(id, ghost);
+            return ghost;
+        }
+
+        ghost.lastPosition.x = ghost.position.x;
+        ghost.lastPosition.y = ghost.position.y;
+        ghost.targetPosition = { ...position };
+        ghost.snapshotTime = timestamp;
+        ghost.targetTime = timestamp + lerpDurationMs;
+        ghost.radius = Number.isFinite(snapshot.radius) ? snapshot.radius : ghost.radius;
+        ghost.maxHealth = Number.isFinite(snapshot.maxHealth) ? snapshot.maxHealth : ghost.maxHealth;
+        ghost.health = Number.isFinite(snapshot.health) ? snapshot.health : ghost.health;
+        ghost.speed = Number.isFinite(snapshot.speed) ? snapshot.speed : ghost.speed;
+        ghost.damage = Number.isFinite(snapshot.damage) ? snapshot.damage : ghost.damage;
+        ghost.alive = snapshot.alive !== false;
+        ghost.attackCooldown = Number.isFinite(snapshot.attackCooldown) ? snapshot.attackCooldown : ghost.attackCooldown;
+        ghost.waveNumber = Number.isFinite(snapshot.waveNumber) ? snapshot.waveNumber : ghost.waveNumber;
+        ghost.hitFlash = Number.isFinite(snapshot.hitFlash) ? snapshot.hitFlash : 0;
+        return ghost;
+    }
+
+    function syncRemoteEnemiesFromHostSnapshots(snapshots = []) {
+        if (!Array.isArray(snapshots)) {
+            return;
+        }
+        if (!multiplayerState.lobbyId || multiplayerState.isHost) {
+            return;
+        }
+        const timestamp = nowMs();
+        const prev = remoteEnemyState.lastSnapshotTs;
+        const interval = prev !== null ? Math.max(0, timestamp - prev) : 0;
+        remoteEnemyState.lastSnapshotTs = timestamp;
+        const lerpDuration = Math.max(
+            REMOTE_ENEMY_INTERP_MIN_MS,
+            Math.min(
+                REMOTE_ENEMY_INTERP_MAX_MS,
+                interval > 0 ? interval * 1.1 : 350
+            )
+        );
+        const seen = new Set();
+        for (const snapshot of snapshots) {
+            const ghost = ensureRemoteEnemyGhost(snapshot, timestamp, lerpDuration);
+            if (ghost) {
+                seen.add(ghost.id);
+            }
+        }
+        if (!snapshots.length) {
+            resetRemoteEnemyState(true);
+        } else {
+            for (const id of Array.from(remoteEnemyState.ghosts.keys())) {
+                if (!seen.has(id)) {
+                    remoteEnemyState.ghosts.delete(id);
+                }
+            }
+        }
+        enemyWaves.enemies = Array.from(remoteEnemyState.ghosts.values());
+    }
+
+    function updateRemoteEnemyVisuals() {
+        if (!multiplayerState.lobbyId || multiplayerState.isHost) {
+            return;
+        }
+        if (!remoteEnemyState.ghosts.size) {
+            enemyWaves.enemies = [];
+            return;
+        }
+        const timestamp = nowMs();
+        const updated = [];
+        for (const ghost of remoteEnemyState.ghosts.values()) {
+            const lastVisual = Number.isFinite(ghost.__lastVisualUpdate) ? ghost.__lastVisualUpdate : timestamp;
+            const deltaSeconds = Math.max(0, (timestamp - lastVisual) / 1000);
+            ghost.__lastVisualUpdate = timestamp;
+            const start = ghost.lastPosition || ghost.position;
+            const target = ghost.targetPosition || ghost.position;
+            const duration = Math.max(
+                REMOTE_ENEMY_INTERP_MIN_MS,
+                Math.min(
+                    REMOTE_ENEMY_INTERP_MAX_MS,
+                    (ghost.targetTime ?? timestamp) - (ghost.snapshotTime ?? timestamp)
+                )
+            );
+            ghost.hitFlash = Math.max(0, (ghost.hitFlash ?? 0) - deltaSeconds);
+            if (Number.isFinite(ghost.attackCooldown)) {
+                ghost.attackCooldown = Math.max(0, ghost.attackCooldown - deltaSeconds);
+            }
+            if (duration <= 0) {
+                ghost.position.x = target.x;
+                ghost.position.y = target.y;
+            } else {
+                let t = (timestamp - (ghost.snapshotTime ?? timestamp)) / duration;
+                if (!Number.isFinite(t)) {
+                    t = 1;
+                }
+                t = Math.max(0, Math.min(1, t));
+                ghost.position.x = start.x + (target.x - start.x) * t;
+                ghost.position.y = start.y + (target.y - start.y) * t;
+            }
+            updated.push(ghost);
+        }
+        enemyWaves.enemies = updated;
+    }
     const loot = new LootManager(world, {
         lootQualityModifier: difficultySettings.lootQualityModifier,
         resourceYield: difficultySettings.resourceYieldMultiplier
@@ -448,6 +593,8 @@ const init = async () => {
     const mpStartButton = document.getElementById("mp-start-btn");
     const mpLeaveButton = document.getElementById("mp-leave-btn");
     const chatPanel = document.getElementById("chat-panel");
+    const chatHeader = document.getElementById("chat-header");
+    const chatToggleButton = document.getElementById("chat-collapse-btn");
     const chatLog = document.getElementById("chat-log");
     const chatForm = document.getElementById("chat-form");
     const chatInput = document.getElementById("chat-input");
@@ -455,12 +602,23 @@ const init = async () => {
     const CHAT_HISTORY_LIMIT = 80;
     const CHAT_MESSAGE_LIMIT = 200;
     const CHAT_NAME_LIMIT = 32;
+    const CHAT_COLLAPSE_STORAGE_KEY = "dd_chat_collapsed";
     const chatState = {
         entries: [],
         unread: false
     };
+    let chatCollapsed = false;
     let lobbyMembersTracked = false;
     const knownLobbyMembers = new Map();
+
+    try {
+        const storedCollapseValue = localStorage.getItem(CHAT_COLLAPSE_STORAGE_KEY);
+        if (storedCollapseValue === "1") {
+            chatCollapsed = true;
+        }
+    } catch (_) {
+        chatCollapsed = false;
+    }
 
     if (chatPanel && !chatPanel.dataset.state) {
         chatPanel.dataset.state = "idle";
@@ -510,12 +668,41 @@ const init = async () => {
         }
         if (chatState.unread) {
             chatPanel.dataset.state = "unread";
-        } else if (document.activeElement === chatInput) {
+        } else if (!chatCollapsed && document.activeElement === chatInput) {
             chatPanel.dataset.state = "active";
         } else {
             chatPanel.dataset.state = "idle";
         }
     };
+
+    const setChatCollapsed = (collapsed, { persist = true } = {}) => {
+        if (!chatPanel) {
+            chatCollapsed = false;
+            return;
+        }
+        const next = Boolean(collapsed);
+        chatCollapsed = next;
+        chatPanel.dataset.collapsed = next ? "true" : "false";
+        if (chatToggleButton) {
+            const expanded = !next;
+            chatToggleButton.textContent = expanded ? "Collapse" : "Expand";
+            chatToggleButton.setAttribute("aria-expanded", String(expanded));
+            chatToggleButton.setAttribute("aria-label", expanded ? "Collapse chat" : "Expand chat");
+        }
+        if (persist) {
+            try {
+                localStorage.setItem(CHAT_COLLAPSE_STORAGE_KEY, next ? "1" : "0");
+            } catch (_) {
+                // ignore persistence issues (private mode, etc.)
+            }
+        }
+        updateChatPanelState();
+        if (!next) {
+            requestAnimationFrame(scrollChatToBottom);
+        }
+    };
+
+    setChatCollapsed(chatCollapsed, { persist: false });
 
     const clearChatUnread = () => {
         if (!chatState.unread) {
@@ -593,6 +780,9 @@ const init = async () => {
     };
 
     const focusChatInput = () => {
+        if (chatCollapsed) {
+            setChatCollapsed(false);
+        }
         if (!chatInput) {
             return;
         }
@@ -620,8 +810,24 @@ const init = async () => {
     };
 
     if (chatPanel) {
-        chatPanel.addEventListener("mouseenter", clearChatUnread);
+        chatPanel.addEventListener("mouseenter", () => {
+            if (!chatCollapsed) {
+                clearChatUnread();
+            }
+        });
         chatPanel.addEventListener("mouseleave", updateChatPanelState);
+    }
+
+    if (chatToggleButton) {
+        chatToggleButton.addEventListener("click", () => {
+            setChatCollapsed(!chatCollapsed);
+        });
+    }
+
+    if (chatHeader) {
+        chatHeader.addEventListener("dblclick", () => {
+            setChatCollapsed(!chatCollapsed);
+        });
     }
 
     if (chatLog) {
@@ -1103,6 +1309,27 @@ const init = async () => {
                 resourceSync.lastSentVersion = resourceSync.version;
             }
 
+            if (multiplayerState.isHost) {
+                snapshot.enemies = enemyWaves.enemies.map((enemy) => ({
+                    id: Number.isFinite(enemy.id) ? enemy.id : null,
+                    position: {
+                        x: Number.isFinite(enemy.position?.x) ? enemy.position.x : 0,
+                        y: Number.isFinite(enemy.position?.y) ? enemy.position.y : 0
+                    },
+                    radius: Number.isFinite(enemy.radius) ? enemy.radius : 18,
+                    health: Number.isFinite(enemy.health) ? enemy.health : 0,
+                    maxHealth: Number.isFinite(enemy.maxHealth) ? enemy.maxHealth : 0,
+                    speed: Number.isFinite(enemy.speed) ? enemy.speed : 0,
+                    damage: Number.isFinite(enemy.damage) ? enemy.damage : 0,
+                    alive: enemy.alive !== false,
+                    attackCooldown: Number.isFinite(enemy.attackCooldown) ? enemy.attackCooldown : 0,
+                    waveNumber: Number.isFinite(enemy.waveNumber) ? enemy.waveNumber : 0,
+                    hitFlash: Number.isFinite(enemy.hitFlash) ? enemy.hitFlash : 0
+                }));
+                snapshot.enemiesActive = !!enemyWaves.active;
+                snapshot.toSpawn = Number.isFinite(enemyWaves.toSpawn) ? enemyWaves.toSpawn : 0;
+            }
+
             return snapshot;
         },
         (peers) => {
@@ -1128,6 +1355,13 @@ const init = async () => {
             multiplayerState.lobbyId = snapshot?.lobbyId || null;
             multiplayerState.hostId = snapshot?.hostId || null;
             multiplayerState.isHost = Boolean(snapshot?.hostId && multiplayerInstance.id === snapshot.hostId);
+            const wasHost = Boolean(previousHostId && multiplayerInstance.id === previousHostId);
+            if (wasHost !== multiplayerState.isHost) {
+                resetRemoteEnemyState(true);
+            }
+            if (previousLobbyId && !multiplayerState.lobbyId && !wasHost) {
+                resetRemoteEnemyState(true);
+            }
             if (Number.isFinite(snapshot?.seed)) {
                 multiplayerState.seed = snapshot.seed >>> 0;
             }
@@ -1290,6 +1524,7 @@ const init = async () => {
                 resourcesVersion: resourceSync.version,
                 resourceNodes: resourceSync.snapshot,
                 enemies: enemyWaves.enemies.map((e) => ({
+                    id: Number.isFinite(e.id) ? e.id : null,
                     position: e.position,
                     radius: e.radius,
                     health: e.health,
@@ -1336,9 +1571,13 @@ const init = async () => {
             if (Number.isFinite(fakeHostState.phaseTimer)) gameState.phaseTimer = fakeHostState.phaseTimer;
             if (Number.isFinite(fakeHostState.houseHp) && world && typeof world.house === "object") world.house.hp = fakeHostState.houseHp;
             if (Array.isArray(fakeHostState.enemies)) {
-                enemyWaves.enemies = fakeHostState.enemies
-                    .map((snapshot) => hydrateEnemySnapshot(snapshot))
-                    .filter(Boolean);
+                if (multiplayerState.lobbyId && !multiplayerState.isHost) {
+                    syncRemoteEnemiesFromHostSnapshots(fakeHostState.enemies);
+                } else {
+                    enemyWaves.enemies = fakeHostState.enemies.map((e) => ({ ...(e || {}) }));
+                }
+            } else if (multiplayerState.lobbyId && !multiplayerState.isHost) {
+                syncRemoteEnemiesFromHostSnapshots([]);
             }
             if (typeof fakeHostState.enemiesActive === "boolean") {
                 enemyWaves.active = !!fakeHostState.enemiesActive;
@@ -3090,6 +3329,9 @@ function updateGame(deltaSeconds) {
         const waveEvents = shouldRunEnemies
             ? enemyWaves.update(deltaSeconds, world, structures, inventory, effects, player, gameState.phase === "night")
             : { playerHits: [] };
+        if (!shouldRunEnemies) {
+            updateRemoteEnemyVisuals();
+        }
         structures.update(deltaSeconds, enemyWaves.enemies, effects);
         effects.update(deltaSeconds);
 
